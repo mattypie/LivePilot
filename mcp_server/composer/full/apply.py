@@ -616,6 +616,36 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
 
     preflight_result = await applier.preflight(ctx)
 
+    # ── Phase 4 Task 19: default-track auto-cleanup (parity with fast mode preflight)
+    # Detect fresh-project state and delete the default Ableton tracks
+    # (1-MIDI, 2-MIDI, 3-Audio, etc.) so the new compose-created tracks
+    # don't sit alongside leftover empties.
+    fresh_cleanup_actions: list[str] = []
+    try:
+        from ..fast.brief_builder import detect_fresh_project, is_default_track_name
+        session_preflight = ableton.send_command("get_session_info", {})
+        if detect_fresh_project(session_preflight):
+            # Delete default tracks in REVERSE order to keep indices stable.
+            # Ableton requires at least 1 track — keep the lowest-indexed default.
+            default_indices = sorted(
+                [
+                    t["index"]
+                    for t in session_preflight.get("tracks", [])
+                    if is_default_track_name(t.get("name", ""))
+                ],
+                reverse=True,
+            )
+            # Drop the LAST element (lowest index) so 1 track survives.
+            if len(default_indices) > 1:
+                for idx in default_indices[:-1]:
+                    try:
+                        ableton.send_command("delete_track", {"track_index": idx})
+                        fresh_cleanup_actions.append(f"deleted_default_track_{idx}")
+                    except Exception as exc:
+                        logger.debug("apply_full_v2: delete_track(%d) failed: %s", idx, exc)
+    except Exception as exc:
+        logger.debug("apply_full_v2: fresh-project cleanup skipped: %s", exc)
+
     # ── Tempo + key application ───────────────────────────────────────
     plan_tempo = plan.get("tempo")
     plan_key = plan.get("key")
@@ -638,6 +668,8 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
     variants_created = 0
     arrangement_clips_created = 0
     events_applied = 0
+    effects_loaded = 0
+    sends_set = 0
     errors: list[dict] = []
     applied_track_indices: list[int] = []
 
@@ -676,6 +708,98 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                 errors.append({
                     "track_index": track_index,
                     "phase": "load_instrument",
+                    "reason": str(exc),
+                })
+
+        # Phase 4 Task 19: per-layer effects (parity with fast mode)
+        # Insert each native device AFTER the instrument load and BEFORE clip
+        # creation so the chain is correct from the start.
+        for effect_spec in track_spec.get("effects", []) or []:
+            device_name = (effect_spec.get("device") or "").strip()
+            if not device_name:
+                continue
+            try:
+                ins_resp = ableton.send_command("insert_device", {
+                    "track_index": track_index,
+                    "device_name": device_name,
+                }) or {}
+                # insert_device returns device_index directly (Remote Script bakes it in).
+                device_index = ins_resp.get("device_index")
+                if device_index is None:
+                    # Fallback: query track and take the last device
+                    try:
+                        track_info = ableton.send_command(
+                            "get_track_info", {"track_index": track_index}
+                        )
+                        device_index = len(track_info.get("devices", [])) - 1
+                    except Exception:
+                        pass
+                for param_name, param_value in (effect_spec.get("params") or {}).items():
+                    try:
+                        ableton.send_command("set_device_parameter", {
+                            "track_index": track_index,
+                            "device_index": int(device_index),
+                            "parameter_name": str(param_name),
+                            "value": float(param_value),
+                        })
+                    except Exception as exc:
+                        logger.debug(
+                            "apply_full_v2: set_device_parameter(%s.%s) failed: %s",
+                            device_name, param_name, exc,
+                        )
+                effects_loaded += 1
+            except Exception as exc:
+                errors.append({
+                    "track_index": track_index,
+                    "phase": f"effect_{device_name}",
+                    "reason": str(exc),
+                })
+
+        # Phase 4 Task 19: per-layer sends (parity with fast mode)
+        # Resolve return_name → send_index via session.return_tracks (case-insensitive).
+        for send_spec in track_spec.get("sends", []) or []:
+            return_name = (send_spec.get("return_name") or "").strip()
+            value = send_spec.get("value")
+            send_index = send_spec.get("send_index")
+            if return_name is None and send_index is None:
+                continue
+            try:
+                value = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if send_index is None and return_name:
+                try:
+                    session_info = ableton.send_command("get_session_info", {})
+                    return_tracks = session_info.get("return_tracks", []) or []
+                    for i, rt in enumerate(return_tracks):
+                        if (rt.get("name") or "").lower() == return_name.lower():
+                            send_index = i
+                            break
+                except Exception as exc:
+                    logger.debug("apply_full_v2: return_tracks lookup failed: %s", exc)
+            if send_index is None:
+                logger.debug(
+                    "apply_full_v2: return_name %r not found in session, skipping send",
+                    return_name,
+                )
+                # Still record as error so caller knows resolution failed
+                errors.append({
+                    "track_index": track_index,
+                    "phase": f"send_{return_name}",
+                    "reason": "return track not found",
+                })
+                continue
+            try:
+                ableton.send_command("set_track_send", {
+                    "track_index": track_index,
+                    "send_index": int(send_index),
+                    "value": value,
+                })
+                sends_set += 1
+            except Exception as exc:
+                errors.append({
+                    "track_index": track_index,
+                    "phase": f"send_{return_name}",
                     "reason": str(exc),
                 })
 
@@ -767,6 +891,9 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
         "variants_created": variants_created,
         "arrangement_clips_created": arrangement_clips_created,
         "events_applied": events_applied,
+        "effects_loaded": effects_loaded,
+        "sends_set": sends_set,
+        "fresh_cleanup_actions": fresh_cleanup_actions,
         "preflight": preflight_result,
         "postflight": postflight_result,
         "errors": errors,

@@ -262,3 +262,144 @@ async def test_result_shape_complete():
     }
     missing = REQUIRED - set(result.keys())
     assert not missing, f"Result shape missing fields: {missing}"
+
+
+# ── Phase 4 Task 19: effects + sends + default-track cleanup ──────
+
+
+def _mock_ctx_recording_with_insert_device():
+    """Like _mock_ctx_recording but also handles insert_device and set_track_send."""
+    ableton = MagicMock()
+    ableton._calls = []
+    track_count = [0]
+    # Simulate devices on each track (appended when insert_device is called)
+    track_devices = {}  # track_index -> [device_dict]
+
+    def send_command(cmd, args):
+        ableton._calls.append((cmd, args))
+        if cmd == "get_session_info":
+            return {
+                "tempo": 120.0,
+                "track_count": track_count[0],
+                "scene_count": 8,
+                "tracks": [],
+                "return_tracks": [
+                    {"name": "A-Reverb", "index": 0},
+                    {"name": "B-Delay", "index": 1},
+                ],
+            }
+        if cmd == "create_midi_track":
+            ti = track_count[0]
+            track_count[0] += 1
+            track_devices[ti] = []
+            return {"index": ti}
+        if cmd == "create_audio_track":
+            ti = track_count[0]
+            track_count[0] += 1
+            track_devices[ti] = []
+            return {"index": ti}
+        if cmd == "load_browser_item":
+            return {"loaded": True, "name": "Mock"}
+        if cmd == "insert_device":
+            ti = args.get("track_index", 0)
+            devices = track_devices.setdefault(ti, [])
+            dev_idx = len(devices)
+            devices.append({"name": args.get("device_name", ""), "index": dev_idx})
+            return {"loaded": args.get("device_name", ""), "device_index": dev_idx}
+        if cmd == "get_track_info":
+            ti = args.get("track_index", 0)
+            devs = track_devices.get(ti, [])
+            return {"track_index": ti, "devices": devs, "clip_slots": []}
+        if cmd == "set_device_parameter":
+            return {"ok": True}
+        if cmd == "set_track_send":
+            return {"ok": True}
+        if cmd == "create_clip":
+            return {"track_index": args["track_index"], "clip_index": args["clip_index"]}
+        if cmd == "add_notes":
+            return {"notes_added": len(args.get("notes", []))}
+        if cmd == "create_arrangement_clip":
+            return {"track_index": args["track_index"], "start_time": args["start_time"]}
+        if cmd == "set_clip_name":
+            return {"name": args.get("name", "")}
+        if cmd == "set_arrangement_clip_name":
+            return {"name": args.get("name", "")}
+        if cmd == "set_tempo":
+            return {"tempo": args["tempo"]}
+        if cmd == "set_song_scale":
+            return {"ok": True}
+        return {"ok": True}
+
+    ableton.send_command = send_command
+    ctx = MagicMock()
+    ctx.lifespan_context = {"ableton": ableton}
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_full_apply_v2_inserts_effects_per_layer():
+    """Each track's effects array -> insert_device per effect after instrument load."""
+    ctx = _mock_ctx_recording_with_insert_device()
+    plan = {
+        "scope": "full",
+        "form": [{"name": "intro", "start_bar": 0, "bars": 4}],
+        "tracks": [{
+            "role": "bass",
+            "instrument": {"uri": "query:Synths#Operator"},
+            "effects": [
+                {"device": "Saturator", "params": {"Drive": 0.4}},
+                {"device": "EQ Eight", "params": {}},
+            ],
+            "variants": [{"id": "v1", "notes": [{"pitch": 45, "start_time": 0, "duration": 1, "velocity": 100}]}],
+            "arrangement_clips": [{"section_index": 0, "variant_id": "v1", "loop_length": 4}],
+        }],
+        "events": [],
+    }
+    result = await apply_full_plan_v2(ctx, plan)
+    cmds = [c[0] for c in ctx.lifespan_context["ableton"]._calls]
+    assert cmds.count("insert_device") == 2  # 2 effects
+    assert result["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_full_apply_v2_sets_sends_per_layer():
+    """Each track's sends array -> set_track_send per send entry."""
+    ctx = _mock_ctx_recording_with_insert_device()
+    plan = {
+        "scope": "full",
+        "form": [{"name": "intro", "start_bar": 0, "bars": 4}],
+        "tracks": [{
+            "role": "pad",
+            "instrument": {"uri": "query:Synths#Wavetable"},
+            "sends": [{"return_name": "A-Reverb", "value": 0.35}],
+            "variants": [{"id": "v1", "notes": [{"pitch": 60, "start_time": 0, "duration": 4, "velocity": 70}]}],
+            "arrangement_clips": [{"section_index": 0, "variant_id": "v1", "loop_length": 4}],
+        }],
+        "events": [],
+    }
+    result = await apply_full_plan_v2(ctx, plan)
+    cmds = [c[0] for c in ctx.lifespan_context["ableton"]._calls]
+    assert "set_track_send" in cmds
+    assert result["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_full_apply_v2_no_effects_field_no_inserts():
+    """Tracks without an effects array don't trigger any insert_device calls
+    beyond what the instrument loads."""
+    ctx = _mock_ctx_recording_with_insert_device()
+    plan = {
+        "scope": "full",
+        "form": [{"name": "intro", "start_bar": 0, "bars": 4}],
+        "tracks": [{
+            "role": "kick",
+            "instrument": {"uri": "query:Synths#DS%20Kick"},
+            "variants": [{"id": "v1", "notes": [{"pitch": 36, "start_time": 0, "duration": 0.5, "velocity": 100}]}],
+            "arrangement_clips": [{"section_index": 0, "variant_id": "v1", "loop_length": 4}],
+        }],
+        "events": [],
+    }
+    result = await apply_full_plan_v2(ctx, plan)
+    cmds = [c[0] for c in ctx.lifespan_context["ableton"]._calls]
+    assert cmds.count("insert_device") == 0  # no effects requested
+    assert result["status"] == "ok"
