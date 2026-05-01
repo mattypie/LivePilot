@@ -12,6 +12,80 @@ from ..framework.applier import Applier
 
 logger = logging.getLogger(__name__)
 
+# ── v1.24 Phase 4 Tasks 18b + 18d: post-load repair helpers ────────
+
+DRUM_ROLES = frozenset({"kick", "snare", "hat", "perc", "clap", "tom", "drum"})
+
+
+def _is_drum_role(role: str) -> bool:
+    """True if the role belongs to the drum family — gets role-default repair."""
+    return role.lower() in DRUM_ROLES
+
+
+def _detect_silent_load(ableton, track_index: int, device_index: int = 0) -> tuple:
+    """Detect if the loaded device is silently misconfigured (empty container).
+
+    Returns (is_silent: bool, reason: str).
+    """
+    try:
+        device_info = ableton.send_command("get_device_info", {
+            "track_index": track_index, "device_index": device_index,
+        })
+    except Exception:
+        return False, ""
+
+    class_name = device_info.get("class_name", "")
+    name = device_info.get("name", "")
+
+    # DrumCell with no sample loaded — bare "Drum Sampler" container URI
+    if class_name == "DrumCell" and name == "Drum Sampler":
+        return True, "DrumCell loaded as bare 'Drum Sampler' container — needs sample inside"
+
+    # Simpler with Sample Length near zero
+    if class_name == "OriginalSimpler":
+        try:
+            params_resp = ableton.send_command("get_device_parameters", {
+                "track_index": track_index, "device_index": device_index,
+            })
+            for p in params_resp.get("parameters", []):
+                if p["name"] == "Sample Length" and p["value"] < 0.001:
+                    return True, "Simpler has no sample loaded (Sample Length=0)"
+        except Exception:
+            pass
+
+    # Drum Rack loaded as bare container
+    if class_name == "DrumGroupDevice" and name == "Drum Rack":
+        return True, "Drum Rack loaded as bare container — no kit pads"
+
+    return False, ""
+
+
+def _apply_drum_role_repair(ableton, track_index: int, device_index: int = 0) -> dict:
+    """Apply Volume=0, Snap=Off, Transpose=+24 to a drum-role Simpler.
+
+    Defense in depth: load_browser_item's role='drum' silently fails to
+    apply these defaults when the track has audio effects. This function
+    re-applies them deterministically post-load.
+
+    Transpose=+24 compensates for the wrong root note (Simpler defaults
+    to C3=60 root, but drum samples should be played at MIDI 36 with root C1).
+
+    Returns the repair result dict.
+    """
+    try:
+        result = ableton.send_command("batch_set_parameters", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameters": [
+                {"parameter_name": "Volume", "value": 0},
+                {"parameter_name": "Snap", "value": 0},
+                {"parameter_name": "Transpose", "value": 24},
+            ],
+        })
+        return {"applied": True, "params": result.get("parameters", [])}
+    except Exception as exc:
+        return {"applied": False, "error": str(exc)}
+
 
 async def apply_fast_plan(
     ctx: Context,
@@ -154,6 +228,9 @@ async def apply_fast_plan(
         new_track_indices.append(new_track_idx)
 
         loaded = False
+        silent_load_warning: str | None = None
+        role_repair: dict | None = None
+
         if uri:
             simpler_role = fast_compose.simpler_role_for(role)
             try:
@@ -164,6 +241,27 @@ async def apply_fast_plan(
                 loaded = True
             except Exception as exc:
                 logger.debug("apply: load_browser_item(%s, %s) failed: %s", new_track_idx, uri, exc)
+
+            if loaded:
+                # v1.24 Phase 4 Task 18b: detect empty containers post-load
+                is_silent, silent_reason = _detect_silent_load(ableton, new_track_idx, device_index=0)
+                if is_silent:
+                    silent_load_warning = silent_reason
+                    logger.warning(
+                        "apply: silent load detected for role=%s track=%s: %s",
+                        role, new_track_idx, silent_reason,
+                    )
+
+                # v1.24 Phase 4 Task 18d: drum role-default repair (defense in depth)
+                # load_browser_item role='drum' silently skips Vol/Snap/root fixes
+                # when the track already has FX. Re-apply deterministically.
+                if _is_drum_role(role):
+                    role_repair = _apply_drum_role_repair(ableton, new_track_idx, device_index=0)
+                    if not role_repair.get("applied"):
+                        logger.debug(
+                            "apply: drum role repair failed for track %s: %s",
+                            new_track_idx, role_repair.get("error"),
+                        )
 
         # Determine clip length: max of (4 bars × 4 beats, end of last note + 1)
         max_end = 0.0
@@ -299,7 +397,7 @@ async def apply_fast_plan(
         # so the user sees provenance per layer.
         applied_technique = layer.get("applied_technique") or None
 
-        layer_results.append({
+        layer_entry: dict = {
             "role": role,
             "track_name": track_name,
             "track_index": new_track_idx,
@@ -311,7 +409,13 @@ async def apply_fast_plan(
             "sends_applied": sends_applied,
             "applied_technique": applied_technique,
             "ok": True,
-        })
+        }
+        if silent_load_warning:
+            layer_entry["silent_load_warning"] = silent_load_warning
+            layer_entry["warnings"] = [silent_load_warning]
+        if role_repair is not None:
+            layer_entry["role_repair"] = role_repair
+        layer_results.append(layer_entry)
 
     # Fire the scene
     fired = False
