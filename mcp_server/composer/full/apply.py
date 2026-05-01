@@ -650,7 +650,11 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                     "create_midi_track",
                     {"index": -1, "name": track_spec.get("role", "")},
                 )
-                track_index = int(result.get("track_index", -1))
+                # BUG-FIX (post-v1.24-Task-14 live test): create_midi_track
+                # returns {"index": N}, NOT {"track_index": N}. The mocks
+                # used "track_index" but the real Remote Script uses "index".
+                # Fall back through both keys so legacy mocks still work.
+                track_index = int(result.get("index", result.get("track_index", -1)))
                 if track_index >= 0:
                     tracks_created += 1
                     applied_track_indices.append(track_index)
