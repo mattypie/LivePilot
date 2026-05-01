@@ -44,7 +44,7 @@ import re
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .layer_planner import LayerSpec
+from .full.layer_planner import LayerSpec
 import logging
 
 logger = logging.getLogger(__name__)

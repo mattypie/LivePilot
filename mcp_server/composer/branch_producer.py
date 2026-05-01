@@ -28,8 +28,8 @@ from typing import Optional
 
 from ..branches import BranchSeed, freeform_seed
 from .prompt_parser import parse_prompt, CompositionIntent
-from .layer_planner import plan_layers, plan_sections
-from .engine import ComposerEngine, CompositionResult
+from .full.layer_planner import plan_layers, plan_sections
+from .full.engine import ComposerEngine, CompositionResult
 
 
 # Strategy registry — each function takes an intent and returns (modified
