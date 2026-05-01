@@ -46,6 +46,15 @@ from typing import Any, Optional
 from ..prompt_parser import CompositionIntent
 from .tier_classification import (
     classify_instrument,
+    is_drum_specific_synth,
+    CONTAINERS_NEEDING_PRESETS,
+    MELODIC_AUDIBLE_DEFAULTS,
+    DRUM_ROLES,
+    TIER_A_CURATED_PRESET,
+    TIER_A_DRUM_SAMPLE,
+    TIER_B_DRUM_SYNTH,
+    TIER_B_AUDIBLE_DEFAULT_VALUE,
+    # Backward-compat alias — used by Tier-C guard in get_role_candidates
     TIER_C_NEEDS_PRESET,
     ROLE_SEARCH_TERMS,
 )
@@ -171,84 +180,211 @@ def get_role_candidates(
     genre: str = "",
     top_n: int = 5,
     exclude_names: Optional[set[str]] = None,
+    *,
+    ableton: Any = None,
+    excluded_uris: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return up to top_n viable instrument candidates for a role.
 
-    Lookup order (BUG-K fallback chain):
-      1. atlas._by_tag for canonical role tags (fastest, deterministic)
-      2. atlas.search() with sonic-description query (when tags miss)
-      3. (caller adds search_browser as a final fallback)
+    v1.24 hunt order (Phase 4 Task 18a-followup — §1 fix):
+      Step 1:  sounds/ — curated .adg/.adv presets (Tier-A, always preferred)
+      Step 1b: drums/  — raw samples for drum roles (Tier-A)
+      Step 2:  atlas   — Tier-B fallback:
+                 - drum-specific synths (DS Kick etc.) → allowed bare for drum roles
+                 - melodic synths (Operator/Wavetable etc.) → ONLY if Step 1 returned
+                   nothing for a melodic role (§1 hard rule)
+                 - Tier-C containers → NEVER
 
-    `exclude_names` (NEW 2026-05-01): set of device names to filter out
-    (anti-repeat — pass currently-loaded device names from the live session
-    to bias the candidate list toward variety across calls).
+    Args:
+      atlas:          atlas object for tag/search fallback
+      role:           "kick", "bass", "pad", etc.
+      genre:          genre hint for sorting
+      top_n:          max candidates to return
+      exclude_names:  set of device names to filter (anti-repeat by name)
+      ableton:        optional ableton client; if provided, Steps 1/1b fire
+      excluded_uris:  set of recently-used preset URIs to filter (anti-repeat by URI)
 
-    Each candidate dict has: uri, name, tags, pack, genre_affinity, source.
+    Each candidate dict has: uri, name, tier, tags, pack, genre_affinity, source.
     """
-    if atlas is None:
+    if atlas is None and ableton is None:
         return []
     exclude_names = exclude_names or set()
+    excluded_uris = excluded_uris or set()
 
+    role_lower = role.lower()
+    is_drum = role_lower in DRUM_ROLES
     candidates: list[dict] = []
-    seen_uris: set[str] = set()
 
-    # Stage 1: tag-based lookup
-    by_tag = getattr(atlas, "_by_tag", None)
-    if by_tag is not None:
-        tags = _ROLE_TAGS.get(role, (role,))
-        for tag in tags:
-            for dev in by_tag.get(tag.lower(), []):
-                uri = dev.get("uri") or ""
+    # ── Step 1: sounds/ — curated presets (always Tier-A) ────────────────
+    if ableton is not None:
+        sounds_term = ROLE_SEARCH_TERMS.get(role_lower, {}).get("sounds_term", role_lower)
+        try:
+            sounds_results = ableton.send_command("search_browser", {
+                "path": "sounds", "name_filter": sounds_term,
+                "max_depth": 4, "max_results": 8, "loadable_only": True,
+            })
+            for item in (sounds_results or {}).get("items", []):
+                uri = item.get("uri", "")
+                name = item.get("name", "")
+                if not name or not uri:
+                    continue
+                if name in exclude_names or uri in excluded_uris:
+                    continue
+                name_lower = name.lower()
+                if item.get("is_loadable") and (
+                    name_lower.endswith(".adg") or name_lower.endswith(".adv")
+                ):
+                    candidates.append({
+                        "uri": uri, "name": name,
+                        "tier": TIER_A_CURATED_PRESET, "source": "sounds/",
+                        "tags": [], "pack": "", "genre_affinity": {},
+                    })
+        except Exception as exc:
+            logger.debug("get_role_candidates sounds/ search failed for role=%s: %s", role, exc)
+
+        # ── Step 1b: drums/ — raw samples for drum roles (Tier-A) ────────
+        if is_drum:
+            drums_term = ROLE_SEARCH_TERMS.get(role_lower, {}).get("drums_term")
+            if drums_term:
+                try:
+                    drums_results = ableton.send_command("search_browser", {
+                        "path": "drums", "name_filter": drums_term,
+                        "max_depth": 6, "max_results": 8, "loadable_only": True,
+                    })
+                    for item in (drums_results or {}).get("items", []):
+                        uri = item.get("uri", "")
+                        name = item.get("name", "")
+                        if not name or not uri:
+                            continue
+                        if name in exclude_names or uri in excluded_uris:
+                            continue
+                        name_lower = name.lower()
+                        if item.get("is_loadable") and name_lower.endswith(
+                            (".aif", ".wav", ".adg", ".adv")
+                        ):
+                            candidates.append({
+                                "uri": uri, "name": name,
+                                "tier": TIER_A_DRUM_SAMPLE, "source": "drums/",
+                                "tags": [], "pack": "", "genre_affinity": {},
+                            })
+                except Exception as exc:
+                    logger.debug("get_role_candidates drums/ search failed for role=%s: %s", role, exc)
+
+    # has_tier_a: whether Steps 1/1b returned any curated candidates
+    has_tier_a = len(candidates) > 0
+
+    # ── Step 2: atlas — Tier-B fallback ──────────────────────────────────
+    # Collect atlas candidates (tag-based, then sonic query)
+    if atlas is not None:
+        atlas_candidates: list[dict] = []
+        seen_uris: set[str] = set()
+
+        # Stage 2a: tag-based lookup
+        by_tag = getattr(atlas, "_by_tag", None)
+        if by_tag is not None:
+            tags = _ROLE_TAGS.get(role_lower, (role_lower,))
+            for tag in tags:
+                for dev in by_tag.get(tag.lower(), []):
+                    uri = dev.get("uri") or ""
+                    if uri and uri not in seen_uris:
+                        seen_uris.add(uri)
+                        dev_copy = dict(dev)
+                        dev_copy["__source"] = "tag"
+                        atlas_candidates.append(dev_copy)
+
+        # Stage 2b: sonic-description query fallback
+        if len(atlas_candidates) < top_n and hasattr(atlas, "search"):
+            sonic_query = _ROLE_SONIC_QUERIES.get(role_lower, role_lower)
+            try:
+                search_results = atlas.search(sonic_query, category="instruments", limit=top_n * 2)
+            except Exception:
+                search_results = []
+            for r in search_results or []:
+                dev_data = r.get("device") if isinstance(r, dict) and "device" in r else r
+                if not isinstance(dev_data, dict):
+                    continue
+                uri = dev_data.get("uri") or ""
                 if uri and uri not in seen_uris:
                     seen_uris.add(uri)
-                    dev = dict(dev)  # copy so we can annotate
-                    dev["__source"] = "tag"
-                    candidates.append(dev)
+                    dev_copy = dict(dev_data)
+                    dev_copy["__source"] = "search"
+                    atlas_candidates.append(dev_copy)
 
-    # Stage 2: BUG-K fallback — atlas.search() with sonic-description query.
-    # Critical detail (root cause 2026-05-01 live test): atlas.search() returns
-    # results wrapped as `[{"device": <dev_dict>, "score": int}, ...]`, NOT
-    # the raw device dicts. Unwrap before iterating, otherwise dev.get("uri")
-    # returns None for everything and the candidate list stays empty.
-    if len(candidates) < top_n and hasattr(atlas, "search"):
-        sonic_query = _ROLE_SONIC_QUERIES.get(role, role)
-        try:
-            search_results = atlas.search(sonic_query, category="instruments", limit=top_n * 2)
-        except Exception:
-            search_results = []
-        for r in search_results or []:
-            # Handle both wrapped {device, score} and unwrapped device dict
-            # shapes — different atlas versions return different forms.
-            dev_data = r.get("device") if isinstance(r, dict) and "device" in r else r
-            if not isinstance(dev_data, dict):
+        # Filter + classify atlas candidates
+        for dev in atlas_candidates:
+            uri = dev.get("uri") or ""
+            instrument_name = dev.get("name") or ""
+
+            if instrument_name in exclude_names or uri in excluded_uris:
                 continue
-            uri = dev_data.get("uri") or ""
-            if uri and uri not in seen_uris:
-                seen_uris.add(uri)
-                dev_copy = dict(dev_data)
-                dev_copy["__source"] = "search"
-                candidates.append(dev_copy)
 
-    # Filter through universal viability gate (§1 ban + drum keyword + sample-less)
-    viable = [
-        d for d in candidates
-        if is_viable_instrument_uri(d.get("uri") or "", d.get("name") or "", role)
-    ]
+            # Tier-C container: NEVER include
+            if instrument_name in CONTAINERS_NEEDING_PRESETS:
+                continue
 
-    # NEW 2026-05-01: anti-repeat filter — exclude names currently loaded
-    # in the live session. This breaks the "Tree Tone always wins for pad"
-    # repetition the user called out.
-    if exclude_names:
-        viable = [d for d in viable if (d.get("name") or "") not in exclude_names]
+            # Viability gate (§1 ban on Analog/Poli/Drift/Meld + drum keyword)
+            if not is_viable_instrument_uri(uri, instrument_name, role_lower):
+                continue
 
-    # Sort by (genre_affinity, uri_prefix)
-    is_drum_role = role in ("kick", "snare", "hat", "perc", "clap")
+            # Drum-specific synths: always allowed for drum roles (their default IS the drum)
+            if is_drum_specific_synth(instrument_name):
+                if is_drum:
+                    candidates.append({
+                        "uri": uri, "name": instrument_name,
+                        "tier": TIER_B_DRUM_SYNTH, "source": "atlas/",
+                        "tags": dev.get("character_tags") or dev.get("tags") or [],
+                        "pack": dev.get("pack") or "",
+                        "genre_affinity": dev.get("genre_affinity") or dev.get("genres") or {},
+                    })
+                # For melodic roles, drum-specific synths don't make sense — skip
+                continue
+
+            # Known generic melodic synths (Operator, Wavetable, etc.):
+            # §1 hard rule — ONLY include as fallback when Tier-A is empty for this role.
+            # These are the "generic AI synth" defaults the user has rejected repeatedly.
+            if instrument_name in MELODIC_AUDIBLE_DEFAULTS:
+                if not has_tier_a:
+                    candidates.append({
+                        "uri": uri, "name": instrument_name,
+                        "tier": TIER_B_AUDIBLE_DEFAULT_VALUE,
+                        "source": dev.get("__source", "atlas/"),
+                        "tags": dev.get("character_tags") or dev.get("tags") or [],
+                        "pack": dev.get("pack") or "",
+                        "genre_affinity": dev.get("genre_affinity") or dev.get("genres") or {},
+                        "fallback_warning": (
+                            "no curated preset found in sounds/ for this role; "
+                            "bare-synth default may sound generic"
+                        ),
+                    })
+                # If has_tier_a, SKIP this Tier-B melodic synth entirely (§1 fix)
+                continue
+
+            # Unknown classification — custom atlas device (named preset, curated device).
+            # These are NOT generic defaults — they have specific character via atlas.
+            # Include as Tier-B; viability gate already ran above.
+            candidates.append({
+                "uri": uri, "name": instrument_name,
+                "tier": TIER_B_AUDIBLE_DEFAULT_VALUE, "source": dev.get("__source", "atlas/"),
+                "tags": dev.get("character_tags") or dev.get("tags") or [],
+                "pack": dev.get("pack") or "",
+                "genre_affinity": dev.get("genre_affinity") or dev.get("genres") or {},
+            })
+
+    # ── Sort: Tier-A first, then Tier-B; within same tier, genre affinity ──
+    _TIER_ORDER = {
+        TIER_A_CURATED_PRESET: 0,
+        TIER_A_DRUM_SAMPLE: 1,
+        TIER_B_DRUM_SYNTH: 2,
+        TIER_B_AUDIBLE_DEFAULT_VALUE: 3,
+        # Legacy alias — sort same as B_audible_default
+        "B_audible_default": 3,
+    }
     gl = (genre or "").lower()
 
-    def _genre_score(dev: dict) -> int:
+    def _genre_score(c: dict) -> int:
         if not gl:
             return 0
-        aff = dev.get("genre_affinity") or dev.get("genres") or {}
+        aff = c.get("genre_affinity") or {}
         if isinstance(aff, dict):
             primary = [str(g).lower() for g in (aff.get("primary") or [])]
             secondary = [str(g).lower() for g in (aff.get("secondary") or [])]
@@ -258,50 +394,11 @@ def get_role_candidates(
                 return 1
         return 0
 
-    def _uri_prefix_score(dev: dict) -> int:
-        uri = dev.get("uri") or ""
-        if is_drum_role:
-            if uri.startswith("query:Drums#"):
-                return 3
-            if uri.startswith(("query:Sounds#Drum", "query:Sounds/Drum")):
-                return 2
-            if uri.startswith("query:Sounds"):
-                return 1
-            return 0
-        if uri.startswith("query:Sounds"):
-            return 2
-        if uri.startswith("query:Synths#"):
-            return 1
-        return 0
-
-    viable.sort(
-        key=lambda d: (_genre_score(d), _uri_prefix_score(d)),
-        reverse=True,
+    candidates.sort(
+        key=lambda c: (_TIER_ORDER.get(c.get("tier", ""), 99), -_genre_score(c))
     )
 
-    out: list[dict] = []
-    for dev in viable[:top_n]:
-        instrument_name = dev.get("name") or ""
-        tier = classify_instrument(instrument_name)
-        # Defensively skip Tier-C bare instruments here too.
-        # (The primary Tier-C guard is in _is_tier_c_bare; this catches any
-        # that slipped past is_viable_instrument_uri due to missing name.)
-        if tier == "C_needs_preset":
-            continue
-        out.append({
-            "uri": dev.get("uri") or "",
-            "name": instrument_name,
-            "tags": dev.get("character_tags") or dev.get("tags") or [],
-            "pack": dev.get("pack") or "",
-            "genre_affinity": dev.get("genre_affinity") or dev.get("genres") or {},
-            "source": dev.get("__source", "atlas"),
-            # v1.24 tier field — A_sample_ready or B_audible_default
-            # (None/unknown instruments default to B_audible_default so they
-            # remain in the brief; the agent can still pick them if they slip
-            # through viability checks).
-            "tier": tier if tier in ("A_sample_ready", "B_audible_default") else "B_audible_default",
-        })
-    return out
+    return candidates[:top_n]
 
 
 # Legacy name — kept for callers that still want a single pick (e.g. unit
@@ -1114,6 +1211,29 @@ def _extract_loaded_device_names(session_info: dict) -> set[str]:
     return names
 
 
+def _extract_loaded_preset_uris(session_info: dict) -> set[str]:
+    """Anti-repeat helper: extract browser URIs of curated presets already
+    loaded in the session.
+
+    Looks for device names ending in .adg or .adv (these are curated presets
+    that were loaded via load_browser_item and carry a browser URI). Adds the
+    URI so get_role_candidates can filter them via excluded_uris.
+
+    Also extracts sample paths from Simpler/Sampler devices when available.
+    """
+    uris: set[str] = set()
+    for track in (session_info.get("tracks") or []):
+        for dev in (track.get("devices") or []):
+            uri = dev.get("uri") or dev.get("browser_uri") or ""
+            if uri:
+                uris.add(uri)
+            # Also capture sample paths stored on Simpler devices
+            sample_path = dev.get("sample_path") or dev.get("file_path") or ""
+            if sample_path:
+                uris.add(sample_path)
+    return uris
+
+
 def build_creative_brief(
     intent: CompositionIntent,
     atlas: Any,
@@ -1123,6 +1243,9 @@ def build_creative_brief(
     rng: Optional[random.Random] = None,
     reference: Optional[str] = None,
     exclude_loaded_device_names: Optional[set[str]] = None,
+    *,
+    ableton: Any = None,
+    excluded_preset_uris: Optional[set[str]] = None,
 ) -> dict:
     """Build the creative brief returned by compose(mode="fast").
 
@@ -1137,6 +1260,12 @@ def build_creative_brief(
       - knowledge_search_queries: queries the agent can run via Ableton Knowledge
         MCP (search_transcripts / search_videos / search_live_manual) for
         producer-voice technique inspiration
+
+    Phase-4 Task 18a-followup (§1 fix):
+      - ableton: if provided, fires search_browser("sounds/") before atlas so
+        curated .adg/.adv presets are Tier-A candidates for every role.
+      - excluded_preset_uris: URIs of recently-loaded curated presets — filtered
+        out so the agent can't re-pick the same .adv twice in a row.
 
     The agent reads this, designs creatively, submits to compose_fast_apply.
     """
@@ -1156,9 +1285,10 @@ def build_creative_brief(
         ],
     }
 
-    # Atlas instrument candidates — 12 per role with anti-repeat exclusion
-    # (NEW 2026-05-01: pass currently-loaded device names so candidates
-    # bias toward variety across calls instead of repeating same picks).
+    # Atlas + sounds/ instrument candidates — 12 per role with anti-repeat exclusion.
+    # (NEW 2026-05-01: pass currently-loaded device names so candidates bias toward
+    # variety across calls instead of repeating same picks.)
+    # (NEW 18a-followup: pass ableton + excluded_preset_uris for sounds/ hunt.)
     suggested_roles = _suggest_layer_roles(intent)
     instruments_by_role: dict[str, list[dict]] = {}
     for role in suggested_roles:
@@ -1167,6 +1297,8 @@ def build_creative_brief(
             genre=intent.genre or "",
             top_n=candidates_per_role,
             exclude_names=exclude_loaded_device_names,
+            ableton=ableton,
+            excluded_uris=excluded_preset_uris,
         )
         instruments_by_role[role] = candidates
 

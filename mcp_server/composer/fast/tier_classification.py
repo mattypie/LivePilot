@@ -6,12 +6,17 @@ Tier-C bare URIs MUST NEVER be returned — the brief substitutes a curated pres
 or omits that synth entirely.
 
 Tier table (BINDING):
-  A — sample-ready   : Factory .adg/.adv from sounds/; raw samples from drums/samples/.
-                       Plays sound on note-on without additional configuration.
-  B — audible default: Self-contained synths with a non-silent default patch.
-                       Plays a sound on note-on without preset.
-  C — needs preset   : Containers + programming-required synths.
-                       Silent or sub-audible without a sample or preset loaded.
+  A_curated_preset — .adg / .adv from sounds/ folder. Loaded with character.
+  A_drum_sample    — raw sample (.aif/.wav) from drums/ folder. load_browser_item
+                     auto-wraps in Simpler with drum-role defaults.
+  B_drum_synth     — drum-specific synth (DS Kick etc). Default patch IS the drum.
+  B_audible_default — generic melodic synth (Operator, Wavetable etc).
+                      Default patch is "generic AI synth" — only return as fallback
+                      when sounds/ returns nothing for a melodic role.
+  C_needs_preset   — empty container (Drum Sampler, Emit etc). NEVER return.
+
+Legacy tier value "A_sample_ready" is accepted in VALID_BRIEF_TIERS so old
+tests still pass; new candidates use the specific A_* values.
 """
 
 from __future__ import annotations
@@ -19,8 +24,53 @@ from __future__ import annotations
 from typing import Optional
 
 
-# Tier-B: self-contained synths with audible default patch (no preset needed).
-TIER_B_AUDIBLE_DEFAULT: frozenset[str] = frozenset({
+# ── Tier VALUE constants (used as the `tier` field in brief candidates) ──
+
+TIER_A_CURATED_PRESET = "A_curated_preset"
+TIER_A_DRUM_SAMPLE = "A_drum_sample"
+TIER_B_DRUM_SYNTH = "B_drum_synth"
+TIER_B_AUDIBLE_DEFAULT_VALUE = "B_audible_default"
+TIER_C_NEEDS_PRESET_VALUE = "C_needs_preset"
+
+# Tiers that are valid in brief output (Tier-C is NEVER valid)
+VALID_BRIEF_TIERS = frozenset({
+    TIER_A_CURATED_PRESET,
+    TIER_A_DRUM_SAMPLE,
+    TIER_B_DRUM_SYNTH,
+    TIER_B_AUDIBLE_DEFAULT_VALUE,
+    # Legacy alias — kept so old briefs and tests still work
+    "A_sample_ready",
+    # Legacy alias — "B_audible_default" is also the old tier value and is valid
+    "B_audible_default",
+})
+
+# Role sets
+DRUM_ROLES = frozenset({"kick", "snare", "hat", "perc", "clap", "tom", "drum"})
+MELODIC_ROLES = frozenset({"bass", "lead", "pad", "atmos", "vox", "fx", "texture"})
+
+
+# ── Frozensets of instrument names (used for name-based classification) ──
+
+# Drum-specific synths — purpose-built drum sound generators.
+# Their default patches ARE the intended drum sound (unlike generic melodic
+# synths whose defaults are "generic AI synth").
+# Allowed in drum-role briefs as Tier-B without curated presets.
+DRUM_SPECIFIC_SYNTHS: frozenset[str] = frozenset({
+    "DS Kick",
+    "DS Snare",
+    "DS Hi-Hat",
+    "DS Clap",
+    "DS Cymbal",
+    "DS Tom",
+    "DS Sampler",
+    "DS Drum Bus",
+})
+
+# Melodic synths with audible defaults — "generic AI synth" risk.
+# Renamed from TIER_B_AUDIBLE_DEFAULT to MELODIC_AUDIBLE_DEFAULTS to
+# disambiguate from the tier VALUE string TIER_B_AUDIBLE_DEFAULT_VALUE.
+# The old name TIER_B_AUDIBLE_DEFAULT is kept as an alias for backward compat.
+MELODIC_AUDIBLE_DEFAULTS: frozenset[str] = frozenset({
     "Operator",
     "Wavetable",
     "Drift",
@@ -32,10 +82,14 @@ TIER_B_AUDIBLE_DEFAULT: frozenset[str] = frozenset({
     "Meld",
 })
 
-# Tier-C: containers + programming-required synths.
-# These need either a sample loaded inside (containers) or a curated preset
-# (programming-required synths). NEVER return the bare URI in a brief.
-TIER_C_NEEDS_PRESET: frozenset[str] = frozenset({
+# Backward-compat alias (old tests and callers use this name)
+TIER_B_AUDIBLE_DEFAULT = MELODIC_AUDIBLE_DEFAULTS
+
+# Containers + programming-required synths — NEVER return bare URIs.
+# Renamed from TIER_C_NEEDS_PRESET to CONTAINERS_NEEDING_PRESETS to
+# disambiguate from the tier VALUE string TIER_C_NEEDS_PRESET_VALUE.
+# The old name TIER_C_NEEDS_PRESET is kept as an alias for backward compat.
+CONTAINERS_NEEDING_PRESETS: frozenset[str] = frozenset({
     "Drum Sampler",
     "Drum Rack",
     "DrumGroup",      # internal alias for Drum Rack
@@ -52,21 +106,36 @@ TIER_C_NEEDS_PRESET: frozenset[str] = frozenset({
     "External Instrument",
 })
 
+# Backward-compat alias
+TIER_C_NEEDS_PRESET = CONTAINERS_NEEDING_PRESETS
+
 # Combined lookup: name → tier string
+# Drum-specific synths → "B_drum_synth"; melodic audible defaults → "B_audible_default";
+# containers → "C_needs_preset". Unknown instruments return None.
 TIER_CLASSIFICATION: dict[str, str] = {
-    name: "B_audible_default" for name in TIER_B_AUDIBLE_DEFAULT
+    name: "B_drum_synth" for name in DRUM_SPECIFIC_SYNTHS
 } | {
-    name: "C_needs_preset" for name in TIER_C_NEEDS_PRESET
+    name: "B_audible_default" for name in MELODIC_AUDIBLE_DEFAULTS
+} | {
+    name: "C_needs_preset" for name in CONTAINERS_NEEDING_PRESETS
 }
 
 
 def classify_instrument(name: str) -> Optional[str]:
     """Classify an instrument by name.
 
-    Returns "B_audible_default", "C_needs_preset", or None (unknown).
-    Caller decides what to do with None — typically skip (defensive default).
+    Returns one of:
+      "B_drum_synth"      — drum-specific synth, safe for drum roles bare
+      "B_audible_default" — generic melodic synth, only as fallback
+      "C_needs_preset"    — container, NEVER return bare
+      None                — unknown instrument
     """
     return TIER_CLASSIFICATION.get(name)
+
+
+def is_drum_specific_synth(name: str) -> bool:
+    """True if `name` is a drum-specific synth — safe to return bare for drum roles."""
+    return name in DRUM_SPECIFIC_SYNTHS
 
 
 # Search terms for hunting curated chains in sounds/ and drums/ per role.
