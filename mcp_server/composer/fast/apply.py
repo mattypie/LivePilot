@@ -61,30 +61,56 @@ def _detect_silent_load(ableton, track_index: int, device_index: int = 0) -> tup
 
 
 def _apply_drum_role_repair(ableton, track_index: int, device_index: int = 0) -> dict:
-    """Apply Volume=0, Snap=Off, Transpose=+24 to a drum-role Simpler.
+    """Apply role-default repair to a drum-role layer's instrument.
 
     Defense in depth: load_browser_item's role='drum' silently fails to
     apply these defaults when the track has audio effects. This function
     re-applies them deterministically post-load.
 
-    Transpose=+24 compensates for the wrong root note (Simpler defaults
-    to C3=60 root, but drum samples should be played at MIDI 36 with root C1).
+    Device-class-aware:
+    - For OriginalSimpler (sample-trigger): set Volume=0, Snap=Off, Transpose=+24
+      (Transpose compensates for Simpler's default C3=60 root vs drum-rack convention C1=36).
+    - For other drum devices (DS Kick, Drum Rack, Impulse, etc.): only attempt Volume=0
+      since they don't have Snap/Transpose params (would error otherwise).
 
-    Returns the repair result dict.
+    BUG-FIX (post-Task-18d live test): Remote Script's batch_set_parameters
+    accepts `name_or_index` (legacy field), NOT `parameter_name`. Wrapper
+    docs claim both are supported but actual Remote Script reads only
+    name_or_index. Using parameter_name caused "Parameter 'None' not found"
+    errors. Always use name_or_index for compatibility.
+
+    Returns the repair result dict with per-param status.
     """
+    # Detect device class so we apply class-appropriate params
+    try:
+        device_info = ableton.send_command("get_device_info", {
+            "track_index": track_index, "device_index": device_index,
+        })
+        class_name = device_info.get("class_name", "")
+    except Exception as exc:
+        return {"applied": False, "error": f"get_device_info failed: {exc}"}
+
+    # Build the param list — Volume always; Snap+Transpose only for Simpler
+    params_to_set = [{"name_or_index": "Volume", "value": 0}]
+    if class_name == "OriginalSimpler":
+        params_to_set.extend([
+            {"name_or_index": "Snap", "value": 0},
+            {"name_or_index": "Transpose", "value": 24},
+        ])
+
     try:
         result = ableton.send_command("batch_set_parameters", {
             "track_index": track_index,
             "device_index": device_index,
-            "parameters": [
-                {"parameter_name": "Volume", "value": 0},
-                {"parameter_name": "Snap", "value": 0},
-                {"parameter_name": "Transpose", "value": 24},
-            ],
+            "parameters": params_to_set,
         })
-        return {"applied": True, "params": result.get("parameters", [])}
+        return {
+            "applied": True,
+            "device_class": class_name,
+            "params": result.get("parameters", []),
+        }
     except Exception as exc:
-        return {"applied": False, "error": str(exc)}
+        return {"applied": False, "device_class": class_name, "error": str(exc)}
 
 
 async def apply_fast_plan(

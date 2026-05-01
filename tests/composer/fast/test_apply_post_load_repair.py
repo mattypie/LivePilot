@@ -88,17 +88,24 @@ async def test_drum_role_repair_sets_volume_snap_transpose():
     # Find the parameter-setting calls for Volume, Snap, Transpose on the loaded Simpler
     set_param_calls = [c[1] for c in cmds if c[0] in ("set_device_parameter", "batch_set_parameters")]
 
-    # Collect all (param_name, value) tuples that were set
+    # Collect all (param_name, value) tuples that were set.
+    # The Remote Script accepts `name_or_index` (legacy) — `parameter_name`
+    # was attempted in the original v1.24 fix but doesn't translate; fixed
+    # to use name_or_index post live test.
+    def _extract_param_name(p: dict) -> str | None:
+        return p.get("name_or_index") or p.get("parameter_name") or p.get("parameter_index")
+
     params_set = []
     for args in set_param_calls:
-        if "parameter_name" in args:
-            params_set.append((args["parameter_name"], args["value"]))
+        if "parameter_name" in args or "name_or_index" in args:
+            name = args.get("name_or_index") or args.get("parameter_name")
+            params_set.append((name, args["value"]))
         elif "parameters" in args:
             for p in args["parameters"]:
-                params_set.append((p.get("parameter_name"), p.get("value")))
+                params_set.append((_extract_param_name(p), p.get("value")))
         elif "operations" in args:
             for p in args["operations"]:
-                params_set.append((p.get("parameter_name"), p.get("value")))
+                params_set.append((_extract_param_name(p), p.get("value")))
 
     param_dict = {name: val for name, val in params_set if name}
 
