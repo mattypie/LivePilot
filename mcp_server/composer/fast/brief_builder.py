@@ -43,7 +43,7 @@ import random
 import re
 from typing import Any, Optional
 
-from .prompt_parser import CompositionIntent
+from ..prompt_parser import CompositionIntent
 
 logger = logging.getLogger(__name__)
 
