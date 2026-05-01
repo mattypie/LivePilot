@@ -302,6 +302,9 @@ def _build_section_hypothesis_plan(intent: CompositionIntent, strategy_name: str
 
     Returns a dict with {"steps", "step_count", "summary"}.
     """
+    # v1.24: SECTION_TEMPLATES removed per vocabulary-not-form principle (Task 12).
+    # plan_layers and plan_sections will raise until Task 14 rewires this.
+    # DEPRECATED in v1.24.
     layers = plan_layers(intent)
     sections = plan_sections(intent)
 

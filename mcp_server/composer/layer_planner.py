@@ -11,7 +11,7 @@ from .full.layer_planner import (  # noqa: F401
     _ROLE_TEMPLATES,
     _GENRE_ROLE_PRIORITY,
     _DEFAULT_ROLE_PRIORITY,
-    _DEFAULT_SECTION_TEMPLATE,
+    # v1.24: _DEFAULT_SECTION_TEMPLATE removed per vocabulary-not-form principle (Task 12).
     _build_search_query,
     _ROLE_INSTRUMENT,
     _NON_TONAL_ROLES,

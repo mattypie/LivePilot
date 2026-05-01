@@ -183,87 +183,10 @@ _GENRE_ROLE_PRIORITY: dict[str, list[str]] = {
 _DEFAULT_ROLE_PRIORITY = ["drums", "bass", "lead", "pad", "texture", "vocal", "percussion", "fx"]
 
 
-# ── Section Templates ──────────────────────────────────────────────
-# Each section: name, bar count, which roles play (with optional volume offset)
-
-SECTION_TEMPLATES: dict[str, list[dict]] = {
-    "techno": [
-        {"name": "Intro",     "bars": 8,  "layers": ["drums:-6dB", "texture"]},
-        {"name": "Build",     "bars": 8,  "layers": ["drums", "bass", "percussion"]},
-        {"name": "Drop",      "bars": 16, "layers": ["drums", "bass", "lead", "percussion", "texture"]},
-        {"name": "Breakdown", "bars": 8,  "layers": ["texture", "vocal", "pad"]},
-        {"name": "Drop 2",   "bars": 16, "layers": ["drums", "bass", "lead", "percussion", "vocal", "texture"]},
-        {"name": "Outro",     "bars": 8,  "layers": ["drums:-6dB", "texture", "pad"]},
-    ],
-    # Dub techno — continuous-evolution aesthetic. No Drop structure, no
-    # Build/Break cycle. Section names reflect dub-techno arrangement idioms:
-    # slow reveal, subtraction before addition, return deeper not louder.
-    # Source: concepts/artists/basic-channel.yaml arrangement_idioms +
-    # live-verification finding from v1.18.0 CHANGELOG #2. v1.18.1 #2 fix.
-    "dub techno": [
-        {"name": "Dawn",      "bars": 16, "layers": ["texture:-12dB"]},
-        {"name": "Pulse",     "bars": 16, "layers": ["drums:-6dB", "texture"]},
-        {"name": "Chord",     "bars": 32, "layers": ["drums", "bass", "pad:-6dB", "texture"]},
-        {"name": "Depth",     "bars": 32, "layers": ["drums", "bass", "pad", "texture"]},
-        {"name": "Withdraw",  "bars": 16, "layers": ["pad:-6dB", "texture:-6dB"]},
-        {"name": "Return",    "bars": 16, "layers": ["texture:-12dB"]},
-    ],
-    "house": [
-        {"name": "Intro",     "bars": 8,  "layers": ["drums:-6dB", "pad"]},
-        {"name": "Verse",     "bars": 16, "layers": ["drums", "bass", "pad"]},
-        {"name": "Drop",      "bars": 16, "layers": ["drums", "bass", "lead", "vocal"]},
-        {"name": "Breakdown", "bars": 8,  "layers": ["pad", "texture", "vocal"]},
-        {"name": "Drop 2",   "bars": 16, "layers": ["drums", "bass", "lead", "vocal", "texture"]},
-        {"name": "Outro",     "bars": 8,  "layers": ["drums:-6dB", "pad"]},
-    ],
-    "hip hop": [
-        {"name": "Intro",  "bars": 4,  "layers": ["texture"]},
-        {"name": "Verse",  "bars": 16, "layers": ["drums", "bass", "texture"]},
-        {"name": "Hook",   "bars": 8,  "layers": ["drums", "bass", "lead", "vocal"]},
-        {"name": "Verse 2", "bars": 16, "layers": ["drums", "bass", "percussion", "texture"]},
-        {"name": "Hook 2", "bars": 8,  "layers": ["drums", "bass", "lead", "vocal", "fx"]},
-        {"name": "Outro",  "bars": 4,  "layers": ["texture", "vocal:-10dB"]},
-    ],
-    "ambient": [
-        {"name": "Opening",   "bars": 16, "layers": ["pad", "texture"]},
-        {"name": "Evolve",    "bars": 16, "layers": ["pad", "texture", "vocal"]},
-        {"name": "Peak",      "bars": 16, "layers": ["pad", "texture", "vocal", "lead"]},
-        {"name": "Dissolve",  "bars": 16, "layers": ["pad", "texture"]},
-    ],
-    "drum and bass": [
-        {"name": "Intro",     "bars": 8,  "layers": ["texture", "percussion:-6dB"]},
-        {"name": "Build",     "bars": 8,  "layers": ["drums:-6dB", "bass", "percussion"]},
-        {"name": "Drop",      "bars": 16, "layers": ["drums", "bass", "lead", "percussion", "texture"]},
-        {"name": "Breakdown", "bars": 8,  "layers": ["texture", "vocal", "pad"]},
-        {"name": "Drop 2",   "bars": 16, "layers": ["drums", "bass", "lead", "percussion", "vocal", "fx"]},
-        {"name": "Outro",     "bars": 8,  "layers": ["drums:-6dB", "texture"]},
-    ],
-    "trap": [
-        {"name": "Intro",   "bars": 4,  "layers": ["texture"]},
-        {"name": "Verse",   "bars": 16, "layers": ["drums", "bass", "texture"]},
-        {"name": "Drop",    "bars": 8,  "layers": ["drums", "bass", "lead", "vocal", "fx"]},
-        {"name": "Verse 2", "bars": 16, "layers": ["drums", "bass", "texture", "vocal"]},
-        {"name": "Drop 2",  "bars": 8,  "layers": ["drums", "bass", "lead", "vocal", "fx"]},
-        {"name": "Outro",   "bars": 4,  "layers": ["texture:-6dB"]},
-    ],
-    "lo-fi": [
-        {"name": "Intro",   "bars": 4,  "layers": ["texture", "pad"]},
-        {"name": "A",       "bars": 16, "layers": ["drums", "bass", "pad", "texture"]},
-        {"name": "B",       "bars": 16, "layers": ["drums", "bass", "pad", "vocal"]},
-        {"name": "A2",      "bars": 16, "layers": ["drums", "bass", "pad", "texture"]},
-        {"name": "Outro",   "bars": 8,  "layers": ["pad", "texture"]},
-    ],
-}
-
-# Fallback template for unknown genres
-_DEFAULT_SECTION_TEMPLATE: list[dict] = [
-    {"name": "Intro",     "bars": 8,  "layers": ["texture"]},
-    {"name": "Build",     "bars": 8,  "layers": ["drums", "bass"]},
-    {"name": "Main",      "bars": 16, "layers": ["drums", "bass", "lead", "texture"]},
-    {"name": "Breakdown", "bars": 8,  "layers": ["pad", "texture"]},
-    {"name": "Main 2",   "bars": 16, "layers": ["drums", "bass", "lead", "vocal", "texture"]},
-    {"name": "Outro",     "bars": 8,  "layers": ["drums:-6dB", "texture"]},
-]
+# v1.24: SECTION_TEMPLATES and _DEFAULT_SECTION_TEMPLATE removed per
+# vocabulary-not-form principle (Task 12). The framework provides VOCABULARY
+# (descriptive). The LLM provides FORM (creative). Genre section sequences
+# with bar counts belong in the LLM's training data + WebSearch fallback.
 
 
 # ── Planner Functions ──────────────────────────────────────────────
@@ -400,9 +323,14 @@ def plan_layers(intent: CompositionIntent) -> list[LayerSpec]:
 
     Each LayerSpec describes one track to create: what to search for,
     which technique to use, processing chain, and mix settings.
+
+    # DEPRECATED in v1.24 — full mode is now LLM-creative. Tool may stay
+    # functional but should not be relied on for v1.24+ flows.
+    # v1.24: SECTION_TEMPLATES removed per vocabulary-not-form principle (Task 12).
+    # This function will raise until callers are updated in Task 14.
     """
     roles = _select_roles(intent)
-    sections = plan_sections(intent)
+    sections = plan_sections(intent)  # raises in v1.24 — Task 14 will rewire
     section_names = [s["name"] for s in sections]
 
     layers: list[LayerSpec] = []
@@ -460,12 +388,34 @@ def plan_layers(intent: CompositionIntent) -> list[LayerSpec]:
     return layers
 
 
-def plan_sections(intent: CompositionIntent) -> list[dict]:
-    """Plan arrangement sections based on genre and duration.
+def plan_sections(
+    intent: CompositionIntent,
+    section_template: list[dict] | None = None,
+) -> list[dict]:
+    """Plan arrangement sections based on a caller-supplied template and duration.
+
+    # DEPRECATED in v1.24 — full mode is now LLM-creative. This function may
+    # remain callable but must NOT be relied on for v1.24+ flows. Section
+    # templates (section sequences with bar counts) are forbidden in the
+    # framework — the LLM provides form, not the registry.
+    # v1.24: SECTION_TEMPLATES removed per vocabulary-not-form principle (Task 12).
+
+    Args:
+        intent: CompositionIntent with duration_bars.
+        section_template: List of dicts {name, bars, layers}. Required in
+            v1.24+. The LLM or caller supplies this — no built-in registry.
 
     Returns a list of dicts: {name, bars, layers, start_bar}.
     """
-    template = SECTION_TEMPLATES.get(intent.genre, _DEFAULT_SECTION_TEMPLATE)
+    if section_template is None:
+        raise ValueError(
+            "plan_sections() requires explicit section_template in v1.24+. "
+            "SECTION_TEMPLATES was removed — the LLM provides form, not the "
+            "framework. Pass a section_template list or use the v1.24 full-mode "
+            "compose flow which is LLM-creative."
+        )
+
+    template = section_template
 
     # Scale sections to fit duration_bars
     total_template_bars = sum(s["bars"] for s in template)

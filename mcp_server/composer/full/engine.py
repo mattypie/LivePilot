@@ -332,6 +332,9 @@ class ComposerEngine:
         """
         result = CompositionResult(intent=intent, dry_run=dry_run)
 
+        # v1.24: SECTION_TEMPLATES removed per vocabulary-not-form principle (Task 12).
+        # plan_layers and plan_sections will raise until Task 14 rewires this to
+        # the LLM-creative full-mode flow. DEPRECATED in v1.24.
         layers = plan_layers(intent)
         sections = plan_sections(intent)
         result.layers = layers
