@@ -509,7 +509,8 @@ def test_simpler_hygiene_no_longer_overrides_ve_mode():
     import os
     _here = os.path.dirname(os.path.abspath(__file__))
     src = open(
-        os.path.join(_here, "..", "mcp_server", "tools", "_analyzer_engine", "sample.py")
+        os.path.join(_here, "..", "mcp_server", "tools", "_analyzer_engine", "sample.py"),
+        encoding="utf-8",
     ).read()
     # The hygiene_params list must NOT include Ve Mode anymore
     hygiene_section_idx = src.find("hygiene_params: list[dict]")
@@ -525,7 +526,8 @@ def test_simpler_hygiene_still_sets_volume_and_snap():
     import os
     _here = os.path.dirname(os.path.abspath(__file__))
     src = open(
-        os.path.join(_here, "..", "mcp_server", "tools", "_analyzer_engine", "sample.py")
+        os.path.join(_here, "..", "mcp_server", "tools", "_analyzer_engine", "sample.py"),
+        encoding="utf-8",
     ).read()
     assert '"Volume"' in src
     assert '"Snap"' in src
