@@ -506,8 +506,10 @@ def test_simpler_hygiene_no_longer_overrides_ve_mode():
     """BUG-FULL-MODE-3 reconsidered: Ve Mode = 4 was the wrong default
     (caused tremolo cycling on long notes). Hygiene must NOT touch
     Ve Mode and let Live's default `0=None` (standard ADSR) stand."""
+    import os
+    _here = os.path.dirname(os.path.abspath(__file__))
     src = open(
-        "/Users/visansilviugeorge/Desktop/DREAM AI/LivePilot/mcp_server/tools/_analyzer_engine/sample.py"
+        os.path.join(_here, "..", "mcp_server", "tools", "_analyzer_engine", "sample.py")
     ).read()
     # The hygiene_params list must NOT include Ve Mode anymore
     hygiene_section_idx = src.find("hygiene_params: list[dict]")
@@ -520,8 +522,10 @@ def test_simpler_hygiene_no_longer_overrides_ve_mode():
 
 def test_simpler_hygiene_still_sets_volume_and_snap():
     """Regression: Volume=0 and Snap=0 are still mandatory hygiene."""
+    import os
+    _here = os.path.dirname(os.path.abspath(__file__))
     src = open(
-        "/Users/visansilviugeorge/Desktop/DREAM AI/LivePilot/mcp_server/tools/_analyzer_engine/sample.py"
+        os.path.join(_here, "..", "mcp_server", "tools", "_analyzer_engine", "sample.py")
     ).read()
     assert '"Volume"' in src
     assert '"Snap"' in src
