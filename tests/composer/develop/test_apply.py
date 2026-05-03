@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 from unittest.mock import MagicMock, AsyncMock, call
-from mcp_server.composer.develop.apply import apply_develop_plan
+from mcp_server.composer.develop.apply import apply_develop_plan, _reconnect_bridge_stub
 
 
 def _mock_ctx_with_recording():
@@ -183,6 +183,26 @@ async def test_apply_rejects_wrong_scope():
 
 
 # ── postflight integration ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reconnect_bridge_stub_awaits_analyzer_tool(monkeypatch):
+    """Develop preflight should actually run the async reconnect tool."""
+    from mcp_server.tools import analyzer as analyzer_module
+
+    called = False
+
+    async def fake_reconnect_bridge(ctx):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    monkeypatch.setattr(analyzer_module, "reconnect_bridge", fake_reconnect_bridge)
+
+    result = await _reconnect_bridge_stub(MagicMock())
+
+    assert called is True
+    assert result == {"connected": True}
+
 
 @pytest.mark.asyncio
 async def test_apply_calls_back_to_arranger_via_postflight():

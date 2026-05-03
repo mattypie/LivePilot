@@ -47,7 +47,7 @@ async def _reconnect_bridge_stub(ctx: Any) -> dict:
     """Reconnect bridge if available; non-fatal failure for develop."""
     try:
         from ...tools.analyzer import reconnect_bridge  # type: ignore
-        result = reconnect_bridge(ctx)
+        result = await reconnect_bridge(ctx)
         if isinstance(result, dict):
             connected = bool(result.get("connected") or result.get("ok"))
             return {"connected": connected}
