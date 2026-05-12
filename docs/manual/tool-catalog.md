@@ -90,24 +90,24 @@
 | `toggle_cue_point` | Set or delete a cue point at the current playback position. |
 | `transpose_arrangement_notes` | Transpose notes in an arrangement clip by semitones (positive=up, negative=down). |
 
-## Atlas (19)
+## Atlas (22)
 
 | Tool | Description |
 |------|-------------|
-| `atlas_audition` | Full sidecar dump for one URI: signature_techniques + producer macros + curated .adg paths (v1.25 hybrid surface). |
+| `atlas_audition` | v1.25 — Full sidecar dump for one atlas URI (hybrid surface Layer B). |
 | `atlas_chain_suggest` | Suggest a full device chain for a track role. |
 | `atlas_compare` | Compare two devices — strengths, weaknesses, and recommendation for a role. |
 | `atlas_cross_pack_chain` | Execute a cross-pack signature recipe step-by-step (Pack-Atlas Phase F). |
 | `atlas_demo_story` | Generate a track-by-track narrative + production-sequence for a demo .als (Pack-Atlas Phase E). |
-| `atlas_describe_chain` | Free-text describe-a-chain. |
+| `atlas_describe_chain` | Free-text describe-a-chain: "a granular pad that sounds like Tim Hecker" |
 | `atlas_device_info` | Get complete atlas knowledge about a device — parameters, recipes, pairings, gotchas. |
-| `atlas_explore` | Refined per-role candidate query with cohort_constraint + corpus-deep ranking (v1.25 hybrid surface). |
+| `atlas_explore` | v1.25 — Refined per-role atlas candidate query (hybrid surface Layer B). |
 | `atlas_extract_chain` | Rebuild a specific demo track's device chain as an executable plan (Pack-Atlas Phase E). |
 | `atlas_macro_fingerprint` | Find presets with similar macro state to the source — 'more like this' search. |
 | `atlas_pack_aware_compose` | Bootstrap a project with pack-coherent track selection given an aesthetic brief (Pack-Atlas Phase F). |
 | `atlas_pack_info` | Inspect a single Ableton pack — device list + enrichment coverage. |
 | `atlas_search` | Search the device atlas for instruments, effects, kits, or plugins. |
-| `atlas_substitute` | Anti-tag-driven swap for a chosen layer (v1.25 hybrid surface). |
+| `atlas_substitute` | v1.25 — Anti-tag-driven swap for a chosen candidate (hybrid surface Layer B). |
 | `atlas_suggest` | Suggest devices for a production intent. |
 | `atlas_techniques_for_device` | Reverse-lookup: what techniques / principles reference this device? |
 | `atlas_transplant` | Adapt a structure from one musical context to another (Pack-Atlas Phase C). |
@@ -313,6 +313,14 @@
 | `generate_phase_shift` | Generate a phase-shifted canon (Steve Reich technique). |
 | `generate_tintinnabuli` | Generate a tintinnabuli voice (Arvo Pärt technique). |
 | `layer_euclidean_rhythms` | Stack multiple Euclidean rhythms for polyrhythmic textures. |
+
+## Grader (3)
+
+| Tool | Description |
+|------|-------------|
+| `grader_evaluate` | Run a rubric across the current session, return verdict + brief. |
+| `grader_evaluate_all` | Run ALL rubrics against the current session in one call. |
+| `grader_list_rubrics` | List the rubrics the grader can evaluate. |
 
 ## Grooves (7)
 
@@ -745,4 +753,4 @@
 | `rank_wonder_variants` | Rank wonder-mode variants by taste + identity + novelty + coherence. |
 
 ---
-*Generated from 462 registered tools.*
+*Generated from 465 registered tools.*
