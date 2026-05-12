@@ -751,6 +751,65 @@ def fix_prose_claims() -> list[str]:
     return fixed
 
 
+def fix_tool_catalog() -> list[str]:
+    """Regenerate ``docs/manual/tool-catalog.md`` from the live tool registry.
+
+    Added in response to the v1.26.0 release failure: three grader tools
+    (``grader_evaluate``, ``grader_evaluate_all``, ``grader_list_rubrics``)
+    were registered as ``@mcp.tool()`` decorators but the catalog was never
+    regenerated. The contract test
+    ``tests/test_skill_contracts.py::test_tool_catalog_matches_live_registry``
+    caught the drift in CI — but only AFTER the release commit and a follow-up
+    doc-sync had already been pushed, requiring a third commit to unblock CI.
+
+    Putting the regen inside ``--fix`` means the standard release reflex
+    (``python3 scripts/sync_metadata.py --fix``) keeps the catalog in lock-step
+    with the live registry. No new release-time checklist item to forget.
+
+    Runs the generator as a subprocess so we don't have to deal with
+    re-entering ``asyncio.run()`` in the sync_metadata process. The generator
+    writes to stdout, we capture it and only rewrite the file when content
+    actually changed (avoids spurious mtime churn).
+
+    Order-of-fixes note: this runs AFTER ``fix_tool_count`` because the
+    count-fix touches ``docs/manual/tool-catalog.md`` (it's in
+    ``TOOL_COUNT_FILES``); the regen here is authoritative since it derives
+    the header count from the live ``mcp.list_tools()`` call rather than
+    from the contract-test assertion.
+    """
+    import subprocess
+
+    catalog_path = ROOT / "docs" / "manual" / "tool-catalog.md"
+    generator = ROOT / "scripts" / "generate_tool_catalog.py"
+    if not generator.exists():
+        return []
+    try:
+        result = subprocess.run(
+            [sys.executable, str(generator)],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return [
+            "  docs/manual/tool-catalog.md: regen FAILED — generator timed out (120s)"
+        ]
+    if result.returncode != 0:
+        stderr_tail = result.stderr.strip().splitlines()[-1] if result.stderr else "(no stderr)"
+        return [
+            f"  docs/manual/tool-catalog.md: regen FAILED — {stderr_tail[:200]}"
+        ]
+    new_content = result.stdout
+    old_content = (
+        catalog_path.read_text(encoding="utf-8") if catalog_path.exists() else ""
+    )
+    if old_content == new_content:
+        return []
+    catalog_path.write_text(new_content, encoding="utf-8")
+    return ["  docs/manual/tool-catalog.md: regenerated from live registry"]
+
+
 def fix_domain_list(domains: list[str]) -> list[str]:
     """Append missing domain names to each DOMAIN_LIST_FILES inline enumeration.
 
@@ -826,6 +885,11 @@ def main():
             + fix_domain_count(domain_count)
             + fix_domain_list(domains)
             + fix_prose_claims()
+            # Catalog regen MUST run after fix_tool_count: the count-fix
+            # touches tool-catalog.md (it's in TOOL_COUNT_FILES), and the
+            # regen overwrites with the live-registry-derived header so
+            # the two stay coherent.
+            + fix_tool_catalog()
         )
         if fixed:
             print(f"\nFixed {len(fixed)} reference(s):")
