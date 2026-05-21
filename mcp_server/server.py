@@ -355,14 +355,14 @@ def _coerce_schema_property(prop: dict) -> None:
 def _get_all_tools():
     """Get all registered tools — defends against FastMCP internal drift.
 
-    FastMCP's public API doesn't expose the registry as of 3.2.x (see
+    FastMCP's public API doesn't expose the registry as of 3.3.x (see
     docs/FASTMCP_UPSTREAM_FR.md). Until it does, we probe known internal
     attribute paths. Each probe fires in try/except so a structural
-    rearrangement (e.g. ``_components`` renamed under 3.3+) falls through
+    rearrangement (e.g. ``_components`` renamed under 3.4+) falls through
     to the next path rather than exploding.
 
     WARNING: Accesses FastMCP private internals. Pinned to
-    fastmcp>=3.0.0,<3.3.0 in requirements.txt. The startup self-test
+    fastmcp>=3.3.1,<3.4.0 in requirements.txt. The startup self-test
     (_assert_tool_registry_accessible) will fail loudly if every probe
     returns empty — better than silently returning [] and disabling
     schema coercion.
@@ -370,14 +370,18 @@ def _get_all_tools():
     probes = [
         # FastMCP 0.x: mcp._tool_manager._tools (dict of name -> Tool)
         ("_tool_manager._tools", lambda: list(mcp._tool_manager._tools.values())),
-        # FastMCP 3.0–3.2: mcp._local_provider._components
+        # FastMCP 3.0–3.3: mcp._local_provider._components
+        # (verified 2026-05-21 against fastmcp 3.3.1 — still the active path)
         (
             "_local_provider._components",
             lambda: list(mcp._local_provider._components.values()),
         ),
-        # FastMCP 3.3+ speculative: mcp._local_provider._tools (anticipated
-        # rename based on naming conventions in other providers). Kept here
-        # so a future bump surfaces a partial match rather than a full miss.
+        # FastMCP 3.4+ speculative: mcp._local_provider._tools (anticipated
+        # rename based on naming conventions in other providers). Verified
+        # 2026-05-21 against fastmcp 3.3.1 — the rename did NOT happen in
+        # 3.3.x; ``_local_provider._components`` remains the live registry.
+        # Kept here so a future bump that DOES rename surfaces a partial
+        # match rather than a full miss.
         (
             "_local_provider._tools",
             lambda: list(mcp._local_provider._tools.values()),
