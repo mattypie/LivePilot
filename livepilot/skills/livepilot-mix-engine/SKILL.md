@@ -7,6 +7,14 @@ description: This skill should be used when the user asks to "analyze my mix", "
 
 The mix engine runs an iterative critic loop: analyze, plan, execute, measure, evaluate, keep or undo. Every mix change is measured before and after. Nothing stays unless it scores better than the original.
 
+## Character-First Default
+
+Do not treat the full loop as the default for vague requests like "make it better", "more character", "more alive", "punchier", "warmer", or "more interesting". Those are usually sound-design or creative-direction requests. Start from analyzer character (`sonic_character`, `get_spectral_shape`, `get_novelty`, `get_onsets`, `get_mel_spectrum`) and prefer source, instrument, device-chain, envelope, filter, saturation, modulation, and transient-shape decisions before generic level changes.
+
+Use `set_track_volume`, `set_track_pan`, and broad send-level balancing only when the user explicitly asks for balance/level/pan/send work, or when analyzer evidence shows a safety/translation problem such as clipping, headroom collapse, mono collapse, or a severe masking issue. Producers can adjust simple loudness by ear quickly; LivePilot's value is in hearing spectral character and choosing a smarter musical intervention.
+
+For normal work, cap mix-engine action to one high-value move plus a short verdict. Enter the repeated full loop only for explicit requests like "deep mix pass", "mastering prep", "fix all mix issues", or an exact target such as LUFS/headroom/mono compatibility.
+
 ## The Mix Critic Loop
 
 Follow these steps in order. Do not skip the evaluation step.
@@ -81,7 +89,7 @@ If the move scored above 0.7 and the user confirms satisfaction, call `memory_le
 
 ### Step 9 — Repeat
 
-Return to Step 1 and re-analyze. The critic list updates after each change. Continue until no high-severity issues remain or the user says to stop.
+Return to Step 1 and re-analyze only when the user requested a deep/full mix pass. Otherwise stop after the first measured high-value intervention and report the remaining optional issues as suggestions. Avoid spending a turn on small volume-balancing loops unless they are the requested task.
 
 ## Quick Mix Checks
 

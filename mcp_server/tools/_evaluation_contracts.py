@@ -22,7 +22,7 @@ from typing import Optional
 # must report confidence=0.0 for that dimension.
 MEASURABLE_DIMENSIONS: frozenset[str] = frozenset({
     "brightness", "warmth", "weight", "clarity",
-    "density", "energy", "punch",
+    "density", "energy", "punch", "motion", "novelty",
 })
 
 # All valid quality dimensions (measurable + unmeasurable).

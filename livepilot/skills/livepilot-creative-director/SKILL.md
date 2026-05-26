@@ -107,6 +107,12 @@ this skill. No → divergence path.
 
 When triggered, these phases are REQUIRED in order. Skip none.
 
+## Character-First Bias
+
+For open-ended quality requests, treat timbre and spectral character as the main creative surface. Do not let the `mix` family win just because words like punch, clean, warm, dark, bright, or wide could be solved by volume/pan/send changes. Prefer `sound_design`, `device_creation`, `sample`, `arrangement`, or `transition` when analyzer evidence suggests a source, instrument, parameter, modulation, envelope, or structural decision would create more musical value.
+
+The `mix` family is dominant only when the user asks for balance, loudness, headroom, masking, stereo translation, send levels, or an explicit mix pass. Otherwise use mix analysis as safety/evidence and keep it out of the main creative slot.
+
 ### Phase 1 — Ground
 
 Read in parallel (all are fast). All of these are REQUIRED, not
@@ -119,6 +125,7 @@ advisory — skipping them is how pattern-repetition survives:
 - `get_action_ledger_summary(limit=10)` — recent committed moves (repeat detection, see `references/anti-repetition-rules.md` for the recency threshold table). **v1.20 correction**: previous docs pointed at `memory_list`, which actually reads the persistent technique library (opt-in `memory_learn` writes) — a DIFFERENT store. The action ledger is the authoritative source; `apply_semantic_move` in explore mode populates it automatically.
 - `get_last_move` — the single most recent committed move; populate the brief's `last_move_target` field so Phase 3 cannot repeat it
 - `get_project_brain_summary` (or `build_project_brain` if absent) — track identity, accepted novelty band
+- Analyzer character read when available: `get_master_spectrum`, `get_spectral_shape`, `get_onsets`, `get_novelty`, and `get_momentary_loudness` for evidence about brightness, flatness, motion, transient shape, and loudness safety. Use these to bias Phase 3 toward instrument/device/parameter decisions, not low-value level tweaks.
 - `explain_song_identity` when the project has one
 - `detect_stuckness` — cheap; its confidence drives escalation decisions (see §Anti-Repetition Protocol below)
 - **Concept packet load (HARD filter when present):** if the user named an artist or genre, or if `project_brain` has a genre identity, retrieve the structured YAML packet from `livepilot-core/references/concepts/artists/<slug>.yaml` or `livepilot-core/references/concepts/genres/<slug>.yaml`. Fall back to the narrative .md entry only if no matching YAML exists. The packet's `avoid` list is a HARD filter on Phase 3 candidates. The packet's `reach_for` lists seed the candidate device pool. The packet's `key_techniques` list resolves to atlas `signature_techniques` or `sample-techniques.md` / `sound-design-deep.md` entries. If NO reference is named and `project_brain` has no genre identity, skip packet loading — do not infer. See `livepilot-core/references/concepts/_schema.md` for the full packet structure and loading rules.

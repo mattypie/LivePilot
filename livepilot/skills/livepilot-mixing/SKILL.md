@@ -7,6 +7,12 @@ description: This skill should be used when the user asks to "mix", "balance lev
 
 Balance track levels, configure routing, apply mix effects, and analyze frequency content in Ableton Live.
 
+## Default Value Filter
+
+For broad musical requests, do not spend the turn on manual-feeling volume balancing. Levels, pan, and sends are useful when the user asks for them, when clipping/headroom/translation is objectively unsafe, or when a routing architecture is part of the style. Otherwise, treat meters as context and use analyzer character to make higher-value choices: source selection, filter/envelope shape, saturation, modulation, transient design, or a better device/preset.
+
+When a request says "more punch", "more warmth", "more character", "less flat", "more alive", or similar, route through sound-design/creative-director first and use mix tools only as safety checks.
+
 ## Read Before Write
 
 Always understand the current state before changing anything:
@@ -121,7 +127,7 @@ When the LivePilot Analyzer M4L device is on the master track:
 - `get_master_rms` — true RMS and peak levels for loudness assessment
 - `get_detected_key` — detect musical key from audio content
 
-Use spectrum data to make informed EQ decisions. If the low_mid band is 6 dB hotter than everything else, there is mud to clean up. If the air band is absent, the mix may sound dull.
+Use spectrum data to make informed EQ decisions. If the low_mid band is 6 dB hotter than everything else, there is mud to clean up. If the air band is absent, the mix may sound dull. When FluCoMa streams are active, prefer `get_spectral_shape`, `get_mel_spectrum`, `get_onsets`, and `get_novelty` for character decisions; those descriptors tell you whether the sound is bright/dark, flat/peaked, static/moving, or transient/soft in a way simple level meters cannot.
 
 ## Mix Engine — Critic-Driven Analysis
 
@@ -144,11 +150,12 @@ Use the mix engine when the user wants a critical evaluation of their mix, not j
 
 Follow this progression — start fast, go deeper only when needed:
 
-1. **Instant:** `get_master_spectrum` + `get_track_meters` — frequency balance + levels. Answers 80% of mix questions.
-2. **Fast (1-5s):** `analyze_loudness` + `analyze_mix` — LUFS, true peak, and full mix analysis. For mastering prep.
-3. **Slow (5-15s):** `compare_to_reference` + `analyze_spectrum_offline` — reference matching, offline spectral analysis. Ask the user first.
+1. **Instant:** `get_master_spectrum` + `get_track_meters` — frequency balance + safety context.
+2. **Fast character:** `get_spectral_shape` + `get_novelty` + `get_onsets` when available — decide whether the next move belongs to sound design, arrangement, or mix.
+3. **Fast mix (1-5s):** `analyze_loudness` + `analyze_mix` — LUFS, true peak, and full mix analysis. For mastering prep or explicit mix critique.
+4. **Slow (5-15s):** `compare_to_reference` + `analyze_spectrum_offline` — reference matching, offline spectral analysis. Ask the user first.
 
-Never skip levels. Start at the lowest appropriate level and offer to go deeper.
+Never skip safety context. Do not let safety context become a long volume-tweaking session unless the user asked for that.
 
 ## Reference
 

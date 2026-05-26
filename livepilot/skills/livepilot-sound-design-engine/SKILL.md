@@ -7,6 +7,28 @@ description: This skill should be used when the user asks to "design a sound", "
 
 The sound design engine analyzes synth patches, identifies timbral weaknesses, and iteratively refines them through a measured critic loop. Every change is evaluated against the before state.
 
+## Analyzer Character Is the Main Signal
+
+For broad quality requests, this skill is the primary route. "More punch", "warmer", "darker", "brighter", "less flat", "more alive", "more texture", and "more character" should become source/device/parameter decisions before they become volume moves.
+
+When the analyzer is available, read character, not just level:
+
+- `get_master_spectrum` for the 9-band contour
+- `get_spectral_shape` for centroid, flatness, crest, rolloff, and brightness/noise shape
+- `get_mel_spectrum` when EQ or source choice needs perceptual detail
+- `get_onsets` for transient/envelope decisions
+- `get_novelty` for movement/staticness decisions
+- `get_momentary_loudness` only for safety/headroom/loudness context
+
+Translate those measurements into musical moves:
+
+- Bright/harsh character → filter contour, softer source, de-harshing, saturation tone; do not merely lower volume.
+- Dark/dull character → oscillator/filter opening, excitation, air-band source, tasteful saturation; do not merely raise volume.
+- Static/low novelty → modulation, envelope drift, LFO, generative device, granular/vector source.
+- Weak punch → envelope/transient shaping, source layering, attack/release work; volume push is last.
+- Flat/noisy spectrum → source substitution, subtractive filtering, simpler spectral role.
+- Weak weight → instrument/register/source decision before master or track gain.
+
 ## Atlas-first reflex (v1.23.x+, MANDATORY before any creative move)
 
 Before producing ANY creative response, query the user's atlas overlays. The corpus contains 337 entries across 3 namespaces, plus 3,917 parameter-level JSON sidecars — far richer than anything inferable from training data alone.
@@ -97,7 +119,7 @@ Move vocabulary:
 ### Step 4 — Capture Before
 
 1. Call `get_device_parameters(track_index, device_index)` — save current parameter state
-2. Call `get_master_spectrum` — save spectral snapshot (if analyzer available)
+2. Call `get_master_spectrum` plus the relevant character streams above — save spectral snapshot (if analyzer available)
 
 ### Step 5 — Execute
 
@@ -116,7 +138,7 @@ Execute one move at a time. Verify before continuing.
 Repeat the same measurements:
 
 1. Call `get_device_parameters(track_index, device_index)` — confirm the change took effect
-2. Call `get_master_spectrum` — save post-change spectral snapshot
+2. Call `get_master_spectrum` plus the same character streams used before — save post-change spectral snapshot
 
 ### Step 7 — Evaluate
 
@@ -135,7 +157,7 @@ If `keep_change` is `true`, report the improvement. If score > 0.7, consider cal
 
 ### Step 9 — Repeat
 
-Return to Step 2. Re-analyze after each kept change. The critic list updates as issues are resolved. Continue until the user is satisfied or no high-severity issues remain.
+Return to Step 2 only when the user asked for a deep refinement pass. In normal mode, stop after one meaningful character-improving move and summarize what changed plus the next optional direction. Avoid long loops of small parameter nudges.
 
 ## Working with Opaque Plugins
 

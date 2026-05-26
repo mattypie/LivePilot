@@ -70,7 +70,7 @@ class ConductorPlan:
 _ROUTING_PATTERNS: list[tuple[str, str, str, str, list[str]]] = [
     # Mix requests
     (r"clean|mud|muddy|low.?mid|eq|equaliz", "mix_engine", "mix", "analyze_mix", ["plan_mix_move", "evaluate_mix_move"]),
-    (r"punch|punchy|transient|dynamics|compress", "mix_engine", "mix", "analyze_mix", ["plan_mix_move"]),
+    (r"dynamics|compress|crest|over.?compress|flat.?dynamics", "mix_engine", "mix", "analyze_mix", ["plan_mix_move"]),
     (r"wide|wider|width|stereo|narrow|mono.?compat", "mix_engine", "mix", "analyze_mix", ["plan_mix_move"]),
     (r"glue|cohes|bus.?comp|mix.?bus", "mix_engine", "mix", "analyze_mix", ["plan_mix_move"]),
     (r"balance|level|volume.?balanc|gain.?stag", "mix_engine", "mix", "analyze_mix", ["plan_mix_move"]),
@@ -87,6 +87,7 @@ _ROUTING_PATTERNS: list[tuple[str, str, str, str, list[str]]] = [
 
     # Sound design requests
     (r"synth|patch|oscillat|timbre|timbral|wavetable|operator", "sound_design", "sound_design", "analyze_sound_design", ["plan_sound_design_move"]),
+    (r"punch|punchy|hit.?harder|snap|attack|transient", "sound_design", "sound_design", "analyze_sound_design", ["plan_sound_design_move"]),
     (r"haunted|lush|aggressive|warm.?pad|fat.?bass|bright.?lead", "sound_design", "sound_design", "analyze_sound_design", ["plan_sound_design_move"]),
     (r"modulation|lfo|movement|evolv|texture", "sound_design", "sound_design", "get_patch_model", ["analyze_sound_design"]),
     (r"layer|sub.?layer|transient.?layer|body", "sound_design", "sound_design", "analyze_sound_design", ["plan_sound_design_move"]),
@@ -254,7 +255,7 @@ def classify_request(request: str) -> ConductorPlan:
 
     # Determine capability requirements
     caps = ["session_access"]
-    if any(r.engine == "mix_engine" for r in routes):
+    if any(r.engine in ("mix_engine", "sound_design") for r in routes):
         caps.append("analyzer")
     if any(r.engine in ("reference_engine",) for r in routes):
         caps.append("offline_perception")
@@ -267,6 +268,8 @@ def classify_request(request: str) -> ConductorPlan:
         notes.append("Multi-engine task — start with get_session_kernel for shared state")
     if any(r.engine == "mix_engine" for r in routes):
         notes.append("Mix engine works best with analyzer data — check get_capability_state")
+    if any(r.engine == "sound_design" for r in routes):
+        notes.append("Sound design should use analyzer character before level or pan changes")
 
     # V2: Search semantic moves for matching intents
     semantic_moves = _find_matching_semantic_moves(lower)

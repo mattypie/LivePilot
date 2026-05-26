@@ -11,6 +11,10 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from ...evaluation.feature_extractors import (
+    extract_dimension_value as _shared_extract_dimension_value,
+)
+from .._snapshot_normalizer import normalize_sonic_snapshot
 from .models import QUALITY_DIMENSIONS, GoalVector, WorldModel, _clamp
 from .taste import compute_taste_fit
 
@@ -29,50 +33,10 @@ def _extract_dimension_value(
     """
     if not sonic:
         return None
-    # Accept both "spectrum" and "bands" keys — get_master_spectrum returns
-    # {"bands": {...}} while the evaluator historically expected {"spectrum": {...}}.
-    # Finding 2 fix: tolerate either shape so raw analyzer output works.
-    bands = sonic.get("spectrum") or sonic.get("bands")
-    if not bands:
+    normalized = normalize_sonic_snapshot(sonic, source="agent_os")
+    if normalized is None:
         return None
-    rms = sonic.get("rms")
-    peak = sonic.get("peak")
-
-    if dimension == "brightness":
-        high = bands.get("high", 0)
-        presence = bands.get("presence", 0)
-        return _clamp((high + presence) / 2.0)
-    elif dimension == "warmth":
-        return _clamp(bands.get("low_mid", 0))
-    elif dimension == "weight":
-        sub = bands.get("sub", 0)
-        low = bands.get("low", 0)
-        return _clamp((sub + low) / 2.0)
-    elif dimension == "clarity":
-        low_mid = bands.get("low_mid", 0)
-        return _clamp(1.0 - low_mid)
-    elif dimension == "density":
-        # Spectral flatness: geometric mean / arithmetic mean of band values.
-        # Higher = more evenly distributed energy (noise-like).
-        # Lower = more tonal (energy concentrated in few bands).
-        vals = [max(v, 1e-10) for v in bands.values() if isinstance(v, (int, float))]
-        if not vals:
-            return None
-        geo_mean = math.exp(sum(math.log(v) for v in vals) / len(vals))
-        arith_mean = sum(vals) / len(vals)
-        return _clamp(geo_mean / max(arith_mean, 1e-10))
-    elif dimension == "energy":
-        return _clamp(rms) if rms is not None else None
-    elif dimension == "punch":
-        if rms and peak and rms > 0:
-            crest_db = 20.0 * math.log10(max(peak / rms, 1.0))
-            # Normalize: 0 dB = 0.0, 20 dB = 1.0
-            return _clamp(crest_db / 20.0)
-        return None
-    else:
-        # Unmeasurable in Phase 1 (width, depth, motion, contrast,
-        # groove, tension, novelty, polish, emotion, cohesion)
-        return None
+    return _shared_extract_dimension_value(normalized, dimension)
 
 def compute_evaluation_score(
     goal: GoalVector,
@@ -203,4 +167,3 @@ def compute_evaluation_score(
         # I5: hint for the agent to track consecutive undos
         "consecutive_undo_hint": not keep_change,
     }
-

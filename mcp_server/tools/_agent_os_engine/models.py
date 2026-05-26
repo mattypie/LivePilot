@@ -33,6 +33,8 @@ MEASURABLE_PROXIES: dict[str, str] = {
     "density": "spectral flatness (geometric/arithmetic mean ratio)",
     "energy": "RMS level",
     "punch": "crest factor in dB (20*log10(peak/rms))",
+    "motion": "spectral novelty + onset strength",
+    "novelty": "FluCoMa novelty score",
 }
 
 VALID_MODES = frozenset({"observe", "improve", "explore", "finish", "diagnose"})
@@ -129,4 +131,3 @@ class TechniqueCard:
             "verification": self.verification,
             "evidence": self.evidence,
         }
-

@@ -68,6 +68,19 @@ def _name_signals_non_anchor(track_name: str) -> bool:
 # Frequency bands where masking is most problematic.
 _MASKING_BANDS = ("sub", "low", "low_mid", "mid", "high_mid", "presence", "high")
 
+_MASKING_ROLE_ALIASES = {
+    "sub_bass": "bass",
+    "hihat": "percussion",
+    "hat": "percussion",
+    "clap": "percussion",
+    "snare": "percussion",
+}
+
+
+def _masking_role(role: str) -> str:
+    """Normalize detailed track roles into the collision-rule vocabulary."""
+    return _MASKING_ROLE_ALIASES.get(role, role)
+
 
 # ── Balance ─────────────────────────────────────────────────────────
 
@@ -164,7 +177,7 @@ def build_masking_map(
     # Build role->indices mapping
     role_to_indices: dict[str, list[int]] = {}
     for idx, role in track_roles.items():
-        role_to_indices.setdefault(role, []).append(idx)
+        role_to_indices.setdefault(_masking_role(role), []).append(idx)
 
     # Known problematic role pairs and their collision bands
     collision_rules: list[tuple[str, str, str, float]] = [
@@ -267,7 +280,11 @@ def build_mix_state(
     role_hints = role_hints or {}
 
     balance = build_balance_state(track_infos, role_hints)
-    masking = build_masking_map(spectrum, role_hints)
+    inferred_roles = {
+        track.track_index: role_hints.get(track.track_index, track.role)
+        for track in balance.track_states
+    }
+    masking = build_masking_map(spectrum, inferred_roles)
 
     # Extract peak from spectrum if available
     peak = None

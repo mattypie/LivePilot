@@ -9,6 +9,8 @@ from __future__ import annotations
 from fastmcp import Context
 
 from ..server import mcp
+from ..evaluation.feature_extractors import extract_character_profile
+from ..tools._snapshot_normalizer import normalize_sonic_snapshot
 from .models import (
     LayerStrategy,
     PatchBlock,
@@ -189,9 +191,36 @@ def _fetch_sound_design_data(ctx: Context, track_index: int) -> dict:
     # Get devices from track_info response (already included by Remote Script)
     devices: list[dict] = track_info.get("devices", [])
 
+    sonic = None
+    try:
+        spectral = ctx.lifespan_context.get("spectral")
+        if spectral and spectral.is_connected:
+            sonic = {}
+            spec_data = spectral.get("spectrum")
+            if spec_data:
+                sonic["bands"] = spec_data["value"]
+            rms_snap = spectral.get("rms")
+            if rms_snap:
+                sonic["rms"] = rms_snap["value"]
+            peak_snap = spectral.get("peak")
+            if peak_snap:
+                sonic["peak"] = peak_snap["value"]
+            key_snap = spectral.get("key")
+            if key_snap:
+                sonic["detected_key"] = key_snap["value"]
+            for key in ("spectral_shape", "mel_bands", "chroma", "onset", "novelty", "loudness"):
+                snap = spectral.get(key)
+                if snap:
+                    sonic[key] = snap["value"]
+            if not sonic:
+                sonic = None
+    except Exception:
+        sonic = None
+
     return {
         "track_info": track_info,
         "devices": devices,
+        "sonic_snapshot": normalize_sonic_snapshot(sonic, source="sound_design"),
     }
 
 
@@ -262,9 +291,11 @@ def analyze_sound_design(ctx: Context, track_index: int) -> dict:
         issues, data["track_info"].get("name", "")
     )
     moves = plan_sound_design_moves(issues, state)
+    sonic_character = extract_character_profile(data.get("sonic_snapshot") or {})
 
     return {
         "state": state.to_dict(),
+        "sonic_character": sonic_character,
         "issues": [i.to_dict() for i in issues],
         "suggested_moves": [m.to_dict() for m in moves],
         "issue_count": len(issues),
@@ -295,6 +326,7 @@ def get_sound_design_issues(ctx: Context, track_index: int) -> dict:
     )
 
     return {
+        "sonic_character": extract_character_profile(data.get("sonic_snapshot") or {}),
         "issues": [i.to_dict() for i in issues],
         "issue_count": len(issues),
     }
@@ -330,6 +362,7 @@ def plan_sound_design_move(ctx: Context, track_index: int) -> dict:
     moves = plan_sound_design_moves(issues, state)
 
     result: dict = {
+        "sonic_character": extract_character_profile(data.get("sonic_snapshot") or {}),
         "moves": [m.to_dict() for m in moves],
         "move_count": len(moves),
         "issue_count": len(issues),

@@ -11,6 +11,7 @@ from fastmcp import Context
 from ..server import mcp
 from ..tools._evaluation_contracts import EvaluationRequest
 from ..tools._snapshot_normalizer import normalize_sonic_snapshot
+from ..evaluation.feature_extractors import extract_character_profile
 from ..evaluation.fabric import evaluate_sonic_move
 from .state_builder import build_mix_state
 from .critics import run_all_mix_critics
@@ -56,6 +57,18 @@ def _fetch_mix_data(ctx: Context) -> dict:
             rms_snap = spectral.get("rms")
             if rms_snap:
                 rms_data = rms_snap["value"] if isinstance(rms_snap["value"], dict) else rms_snap["value"]
+                if spectrum is not None:
+                    spectrum["rms"] = rms_data.get("rms") if isinstance(rms_data, dict) else rms_data
+            peak_snap = spectral.get("peak")
+            if peak_snap and spectrum is not None:
+                spectrum["peak"] = peak_snap["value"]
+
+            for key in ("spectral_shape", "mel_bands", "chroma", "onset", "novelty", "loudness"):
+                snap = spectral.get(key)
+                if snap:
+                    if spectrum is None:
+                        spectrum = {}
+                    spectrum[key] = snap["value"]
     except Exception as exc:
         logger.debug("_fetch_mix_data failed: %s", exc)
 
@@ -86,9 +99,12 @@ def analyze_mix(ctx: Context) -> dict:
     )
     issues = run_all_mix_critics(mix_state)
     moves = plan_mix_moves(issues, mix_state)
+    sonic_snapshot = normalize_sonic_snapshot(data["spectrum"], source="mix_engine")
+    sonic_character = extract_character_profile(sonic_snapshot or {})
 
     return {
         "mix_state": mix_state.to_dict(),
+        "sonic_character": sonic_character,
         "issues": [i.to_dict() for i in issues],
         "suggested_moves": [m.to_dict() for m in moves],
         "issue_count": len(issues),
@@ -110,8 +126,10 @@ def get_mix_issues(ctx: Context) -> dict:
         rms_data=data["rms_data"],
     )
     issues = run_all_mix_critics(mix_state)
+    sonic_snapshot = normalize_sonic_snapshot(data["spectrum"], source="mix_engine")
 
     return {
+        "sonic_character": extract_character_profile(sonic_snapshot or {}),
         "issues": [i.to_dict() for i in issues],
         "issue_count": len(issues),
     }
@@ -133,8 +151,10 @@ def plan_mix_move(ctx: Context) -> dict:
     )
     issues = run_all_mix_critics(mix_state)
     moves = plan_mix_moves(issues, mix_state)
+    sonic_snapshot = normalize_sonic_snapshot(data["spectrum"], source="mix_engine")
 
     return {
+        "sonic_character": extract_character_profile(sonic_snapshot or {}),
         "moves": [m.to_dict() for m in moves],
         "move_count": len(moves),
         "issue_count": len(issues),
@@ -212,10 +232,12 @@ def get_mix_summary(ctx: Context) -> dict:
         rms_data=data["rms_data"],
     )
     issues = run_all_mix_critics(mix_state)
+    sonic_snapshot = normalize_sonic_snapshot(data["spectrum"], source="mix_engine")
 
     return {
         "track_count": len(mix_state.balance.track_states),
         "issue_count": len(issues),
+        "sonic_character": extract_character_profile(sonic_snapshot or {}),
         "dynamics": mix_state.dynamics.to_dict(),
         "stereo": mix_state.stereo.to_dict(),
         "depth": mix_state.depth.to_dict(),

@@ -157,6 +157,15 @@ class TestStateBuilder:
         )
         assert len(ms.balance.track_states) == 1
 
+    def test_build_mix_state_uses_inferred_roles_for_masking(self):
+        tracks = [
+            {"index": 0, "name": "Kick", "volume": 0.8, "pan": 0.0, "mute": False, "solo": False},
+            {"index": 1, "name": "Sub Bass", "volume": 0.7, "pan": 0.0, "mute": False, "solo": False},
+        ]
+        ms = build_mix_state(track_infos=tracks, spectrum={"bands": {"sub": 0.8}})
+        assert len(ms.masking.entries) > 0
+        assert ms.masking.worst_pair == (0, 1)
+
     def test_build_mix_state_missing_data(self):
         ms = build_mix_state()
         assert len(ms.balance.track_states) == 0

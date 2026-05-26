@@ -450,6 +450,14 @@ class TestEvaluationScorer:
         assert "energy" in result["dimension_changes"]
         assert result["dimension_changes"]["energy"]["delta"] > 0
 
+    def test_motion_uses_rich_analyzer_streams(self):
+        goal = self._make_goal(motion=1.0)
+        before = {"novelty": {"score": 0.1}, "onset": {"strength": 0.1}}
+        after = {"novelty": {"score": 0.7}, "onset": {"strength": 0.5}}
+        result = compute_evaluation_score(goal, before, after)
+        assert result["measurable_dimensions"] == 1
+        assert result["dimension_changes"]["motion"]["delta"] > 0
+
 
 # ── Round 1: Outcome Memory Analysis ──────────────────────────────────
 

@@ -20,9 +20,9 @@ class TestClassifyRequest:
         assert plan.routes[0].engine == "mix_engine"
         assert plan.routes[0].entry_tool == "analyze_mix"
 
-    def test_punch_routes_to_mix(self):
+    def test_punch_routes_to_sound_design(self):
         plan = classify_request("make the drums hit harder with more punch")
-        assert plan.routes[0].engine == "mix_engine"
+        assert plan.routes[0].engine == "sound_design"
 
     def test_width_routes_to_mix(self):
         plan = classify_request("make this wider in the chorus")

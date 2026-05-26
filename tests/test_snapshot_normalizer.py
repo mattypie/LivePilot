@@ -56,3 +56,24 @@ class TestNormalizeSonicSnapshot:
         raw = {"bands": {"sub": 0.1}, "rms": 0.5, "peak": 0.8}
         result = normalize_sonic_snapshot(raw)
         assert result["source"] == "unknown"
+
+    def test_preserves_rich_analyzer_streams(self):
+        raw = {
+            "bands": {"sub": 0.1},
+            "spectral_shape": {"centroid": 4200, "flatness": 0.2},
+            "mel_bands": [0.1, 0.2],
+            "chroma": {"C": 0.9},
+            "onset": {"strength": 0.7},
+            "novelty": {"score": 0.4},
+            "loudness": {"momentary_lufs": -18.0},
+        }
+        result = normalize_sonic_snapshot(raw)
+        assert result["spectral_shape"]["centroid"] == 4200
+        assert result["mel_bands"] == [0.1, 0.2]
+        assert result["novelty"]["score"] == 0.4
+
+    def test_accepts_rich_stream_without_bands(self):
+        raw = {"spectral_shape": {"centroid": 5000, "flatness": 0.3}}
+        result = normalize_sonic_snapshot(raw)
+        assert result["spectrum"] == {}
+        assert result["spectral_shape"]["flatness"] == 0.3

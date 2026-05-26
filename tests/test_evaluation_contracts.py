@@ -44,8 +44,11 @@ class TestMeasurableDimensions:
     def test_depth_is_not_measurable(self):
         assert not is_dimension_measurable("depth")
 
-    def test_motion_is_not_measurable(self):
-        assert not is_dimension_measurable("motion")
+    def test_motion_is_measurable(self):
+        assert is_dimension_measurable("motion")
+
+    def test_novelty_is_measurable(self):
+        assert is_dimension_measurable("novelty")
 
     def test_unknown_is_not_measurable(self):
         assert not is_dimension_measurable("nonexistent")

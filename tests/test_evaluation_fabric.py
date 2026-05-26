@@ -2,7 +2,10 @@
 
 import pytest
 
-from mcp_server.evaluation.feature_extractors import extract_dimension_value
+from mcp_server.evaluation.feature_extractors import (
+    extract_character_profile,
+    extract_dimension_value,
+)
 from mcp_server.evaluation.policy import apply_hard_rules
 from mcp_server.evaluation.fabric import (
     evaluate_sonic_move,
@@ -77,10 +80,39 @@ class TestFeatureExtractors:
         assert val is not None
         assert 0.0 <= val <= 1.0
 
+    def test_brightness_uses_spectral_centroid_when_available(self):
+        snap = _make_snapshot(high=0.1, presence=0.1)
+        snap["spectral_shape"] = {"centroid": 6000.0}
+        val = extract_dimension_value(snap, "brightness")
+        assert val is not None
+        assert val > 0.6
+
+    def test_density_uses_spectral_flatness_when_available(self):
+        snap = _make_snapshot(sub=0.9, low=0.01, low_mid=0.01, mid=0.01)
+        snap["spectral_shape"] = {"flatness": 0.75}
+        val = extract_dimension_value(snap, "density")
+        assert val == pytest.approx(0.75, abs=0.01)
+
+    def test_motion_and_novelty_use_flucoma_streams(self):
+        snap = _make_snapshot()
+        snap["novelty"] = {"score": 0.6}
+        snap["onset"] = {"strength": 0.4}
+        assert extract_dimension_value(snap, "novelty") == pytest.approx(0.6)
+        assert extract_dimension_value(snap, "motion") == pytest.approx(0.5)
+
+    def test_character_profile_exposes_biases(self):
+        snap = _make_snapshot(high=0.1, presence=0.1, rms=0.3, peak=0.35)
+        snap["spectral_shape"] = {"centroid": 7000.0, "flatness": 0.8}
+        snap["novelty"] = {"score": 0.1}
+        profile = extract_character_profile(snap)
+        assert profile["available"] is True
+        assert profile["labels"]["brightness"] == "bright"
+        assert any("filter tone" in b for b in profile["biases"])
+
     def test_unmeasurable_returns_none(self):
         snap = _make_snapshot()
-        for dim in ("width", "depth", "motion", "contrast", "groove",
-                    "tension", "novelty", "polish", "emotion", "cohesion"):
+        for dim in ("width", "depth", "contrast", "groove",
+                    "tension", "polish", "emotion", "cohesion"):
             assert extract_dimension_value(snap, dim) is None
 
     def test_empty_snapshot_returns_none(self):
