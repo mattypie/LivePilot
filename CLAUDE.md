@@ -1,11 +1,11 @@
-# LivePilot v1.26.2 — Ableton Live 12
+# LivePilot v1.26.3 — Ableton Live 12
 
 ## Project
 - **Repo:** This directory (LivePilot)
 - **Type:** Agentic MCP production system for Ableton Live 12
 - **Three layers:** Device Atlas (knowledge) + M4L Analyzer (perception) + Technique Memory (learning)
 - **Sister projects:** TDPilot (TouchDesigner), ComfyPilot (ComfyUI)
-- **Design spec:** `docs/specs/2026-03-17-livepilot-design.md`
+- **Historical design snapshot:** `docs/specs/2026-03-17-livepilot-design.md` (March 2026 baseline; current truth lives in README/CLAUDE/AGENTS/manual + `scripts/sync_metadata.py`)
 - **Dev install runbook:** `docs/manual/dev-install.md` — run from a local checkout (venv + `node bin/livepilot.js --install` + point MCP client at `python -m mcp_server` directly); use this whenever iterating on `mcp_server/` or `remote_script/` without republishing to npm
 
 ## Architecture
@@ -43,7 +43,7 @@
 - `get()` in Max JS LiveAPI always returns arrays
 - `warp_markers` is a dict property returning JSON string — use `JSON.parse()`
 - `SimplerDevice.slices` lives on the `sample` child, not the device
-- `replace_sample` only works on Simplers with existing samples
+- M4L `replace_sample` only works on Simplers with existing samples; Live 12.4+ native `replace_sample_native` can route around that limitation when available
 - Max freezes JS from search path cache, not source directory — copy to `~/Documents/Max 9/`
 
 ## Binary Patching Workflow (.amxd)

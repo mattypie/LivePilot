@@ -165,6 +165,7 @@ Simple 3-band EQ for quick tonal shaping.
 - `Filter` — LP/HP on feedback path
 - `Dry/Wet` — Mix
 - `Ping Pong` — Alternates between L/R
+- **Live 12.4+ LFO** — Rate can be Hz, ms, or tempo-synced; seven LFO shapes plus Morph make Delay a stronger movement source before reaching for Echo.
 - **Common sync values**: 1/4, 1/8, 3/16 (dotted eighth), 1/4T (triplet)
 
 **Echo** (combines delay + reverb + modulation)
@@ -191,8 +192,9 @@ Simple 3-band EQ for quick tonal shaping.
 - **Use for**: Guitar-amp style warmth, bass grit
 
 **Erosion**
-- Adds digital artifacts: noise, sine wave modulation
-- `Amount`, `Frequency`, `Width`
+- Adds digital artifacts: noise/sine modulation, edge, air, bitcrush-like abrasion
+- `Amount`, `Frequency`, `Noise Blend`, `Stereo Width`
+- **Live 12.4+** — refreshed Erosion blends sine/noise continuously, scales stereo modulation precisely, and has lower algorithmic latency. Older Sets load as Erosion Legacy.
 - **Use for**: Lo-fi, bitcrushed textures, digital degradation
 
 **Redux**
@@ -206,6 +208,7 @@ Simple 3-band EQ for quick tonal shaping.
 - `Rate 1/2` — LFO speeds
 - `Amount 1/2` — Modulation depths
 - `Feedback` — Flanging intensity
+- `Time` / `Taps` — Live 12.4+ Chorus mode controls for fixed delay-line times and one- vs two-tap chorus textures
 - `Dry/Wet` — Mix
 - **Use for**: Thickening, stereo width, classic chorus
 

@@ -129,7 +129,7 @@ Most sessions do both. Lead with shorthand to anchor the aesthetic, then refine 
 
 ### How the pieces connect
 
-**Remote Script** (`remote_script/LivePilot/`) — A Python ControlSurface that runs inside Ableton's process. Listens on TCP 9878. All Live Object Model calls execute on Ableton's main thread via `schedule_message`. Detects Ableton version at startup and enables three capability tiers: Core (12.0+), Enhanced Arrangement (12.1.10+), Full Intelligence (12.3+).
+**Remote Script** (`remote_script/LivePilot/`) — A Python ControlSurface that runs inside Ableton's process. Listens on TCP 9878. All Live Object Model calls execute on Ableton's main thread via `schedule_message`. Detects Ableton version at startup and enables four capability tiers: Core (12.0+), Enhanced Arrangement (12.1.10+), Full Intelligence (12.3+), Collaborative (12.4+).
 
 **MCP Server** (`mcp_server/`) — Python FastMCP server. Validates inputs, routes commands to the Remote Script over TCP, manages the M4L bridge, runs the atlas, sample engine, composer, and all intelligence engines. This is what your AI client connects to.
 
@@ -741,6 +741,7 @@ npx livepilot --version    # Show version
 - **Core (12.0+):** All session tools, mixing, devices, MIDI, theory, generative, memory
 - **Enhanced Arrangement (12.1.10+):** Native arrangement clips, arrangement automation
 - **Full Intelligence (12.3+):** `insert_device_native`, complete device insertion pipeline
+- **Collaborative (12.4+):** `replace_sample_native` and newer sample-editing routes that bypass the M4L fallback when Live exposes a native LOM path
 
 <br>
 

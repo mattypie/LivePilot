@@ -7,8 +7,9 @@ Tools:
 
 from __future__ import annotations
 
-import importlib.util
 import logging
+import os
+from pathlib import Path
 import urllib.request
 from typing import Optional
 
@@ -21,6 +22,14 @@ from .capability_state import build_capability_state
 logger = logging.getLogger(__name__)
 
 _memory_store = TechniqueStore()
+_FLUCOMA_STREAM_KEYS = (
+    "spectral_shape",
+    "mel_bands",
+    "chroma",
+    "onset",
+    "novelty",
+    "loudness",
+)
 
 
 # ── Capability probes ──────────────────────────────────────────────────
@@ -51,19 +60,114 @@ def _probe_web(timeout: float = 0.5) -> bool:
         return False
 
 
-def _probe_flucoma() -> bool:
-    """Check whether the ``flucoma`` Python package is importable.
+def _flucoma_package_dirs() -> list[Path]:
+    """Return likely Max package locations for FluCoMa."""
+    home = Path.home()
+    if os.name == "nt":
+        docs = Path(os.environ.get("USERPROFILE", str(home))) / "Documents"
+    else:
+        docs = home / "Documents"
+    return [
+        docs / "Max 9" / "Packages" / "FluidCorpusManipulation",
+        docs / "Max 8" / "Packages" / "FluidCorpusManipulation",
+    ]
 
-    Uses ``importlib.util.find_spec`` so no import side-effects fire
-    (matching the pattern already used for optional capability probes
-    elsewhere in the codebase). Returns False if the package is missing
-    or if the spec lookup itself raises.
+
+def _probe_flucoma_package() -> bool:
+    """Check whether the FluCoMa Max package exists on disk.
+
+    LivePilot's real-time FluCoMa support is Max-for-Live based. There is
+    no required Python package named ``flucoma``; probing importability
+    caused false ``flucoma_not_installed`` reports on healthy systems.
     """
     try:
-        return importlib.util.find_spec("flucoma") is not None
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("_probe_flucoma failed: %s", exc)
+        for package_dir in _flucoma_package_dirs():
+            if not package_dir.exists():
+                continue
+            if (package_dir / "package-info.json").exists():
+                return True
+            externals = package_dir / "externals"
+            if externals.exists() and any(externals.glob("fluid.*")):
+                return True
+            return True
         return False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_probe_flucoma_package failed: %s", exc)
+        return False
+
+
+def _probe_flucoma(spectral=None) -> dict:
+    """Probe the Max/bridge-backed FluCoMa runtime.
+
+    ``available`` means at least one FluCoMa stream has reached the
+    spectral cache. ``device_loaded`` means the external package appears
+    installed (or streams prove it is working from a frozen analyzer).
+    """
+    package_installed = _probe_flucoma_package()
+    bridge_connected = bool(
+        spectral is not None and getattr(spectral, "is_connected", False)
+    )
+
+    streams: dict[str, bool] = {}
+    if bridge_connected:
+        for key in _FLUCOMA_STREAM_KEYS:
+            try:
+                streams[key] = spectral.get(key) is not None
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("_probe_flucoma stream %s failed: %s", key, exc)
+                streams[key] = False
+
+    active_streams = sum(1 for present in streams.values() if present)
+    available = active_streams > 0
+    device_loaded = package_installed or available
+
+    reasons: list[str] = []
+    if not device_loaded:
+        reasons.append("flucoma_not_installed")
+    if not bridge_connected:
+        reasons.append("flucoma_bridge_unavailable")
+    elif not available:
+        reasons.append("flucoma_no_streams")
+
+    return {
+        "available": available,
+        "device_loaded": device_loaded,
+        "bridge_connected": bridge_connected,
+        "active_streams": active_streams,
+        "streams": streams,
+        "reasons": reasons,
+    }
+
+
+def _normalize_flucoma_probe(raw) -> dict:
+    """Back-compat shim for tests/extensions that monkeypatch a bool probe."""
+    if isinstance(raw, bool):
+        return {
+            "available": raw,
+            "device_loaded": raw,
+            "reasons": [] if raw else ["flucoma_not_installed"],
+        }
+    if isinstance(raw, dict):
+        available = bool(raw.get("available", False))
+        return {
+            **raw,
+            "available": available,
+            "device_loaded": bool(raw.get("device_loaded", available)),
+            "reasons": list(raw.get("reasons", [])),
+        }
+    return {
+        "available": False,
+        "device_loaded": False,
+        "reasons": ["flucoma_probe_failed"],
+    }
+
+
+def _run_flucoma_probe(spectral=None) -> dict:
+    try:
+        return _normalize_flucoma_probe(_probe_flucoma(spectral))
+    except TypeError:
+        # Older tests monkeypatch _probe_flucoma as a no-arg callable.
+        return _normalize_flucoma_probe(_probe_flucoma())
 
 
 @mcp.tool()
@@ -109,8 +213,8 @@ def get_capability_state(ctx: Context) -> dict:
     # a curated research corpus is installed (see ``research`` domain).
     web_ok = _probe_web()
 
-    # ── FluCoMa — optional import via find_spec (no side effects) ───
-    flucoma_ok = _probe_flucoma()
+    # ── FluCoMa — Max package + live bridge streams ─────────────────
+    flucoma_probe = _run_flucoma_probe(spectral)
 
     state = build_capability_state(
         session_ok=session_ok,
@@ -118,7 +222,9 @@ def get_capability_state(ctx: Context) -> dict:
         analyzer_fresh=analyzer_fresh,
         memory_ok=memory_ok,
         web_ok=web_ok,
-        flucoma_ok=flucoma_ok,
+        flucoma_ok=flucoma_probe["available"],
+        flucoma_device_loaded=flucoma_probe["device_loaded"],
+        flucoma_reasons=flucoma_probe["reasons"],
     )
 
     return state.to_dict()
@@ -183,7 +289,7 @@ def get_session_kernel(
     # does, and propagate through. Without this the kernel's capability view
     # lies to orchestration planners.
     web_ok = _probe_web()
-    flucoma_ok = _probe_flucoma()
+    flucoma_probe = _run_flucoma_probe(spectral)
 
     # v1.17.4: probe memory the same way too. Previously memory_ok=True was
     # hardcoded — if the store raised, the kernel still reported memory
@@ -201,7 +307,9 @@ def get_session_kernel(
         analyzer_fresh=analyzer_fresh,
         memory_ok=memory_ok,
         web_ok=web_ok,
-        flucoma_ok=flucoma_ok,
+        flucoma_ok=flucoma_probe["available"],
+        flucoma_device_loaded=flucoma_probe["device_loaded"],
+        flucoma_reasons=flucoma_probe["reasons"],
     )
 
     # Optional subcomponents — degrade gracefully, but reach into the SAME

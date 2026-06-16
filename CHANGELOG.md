@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.26.3 — 2026-06-16
+
+Truth/knowledge patch for Live 12.4.2, local Codex plugin sync, and runtime capability reporting.
+
+### Fixed
+
+- Runtime FluCoMa capability probing now checks the Max/FluCoMa package and live M4L streams instead of a nonexistent Python `flucoma` module, so installed-but-bridge-blocked systems report `flucoma_bridge_unavailable` or `flucoma_no_streams` instead of the misleading `flucoma_not_installed`.
+- Metadata drift checks now cover `AGENTS.md` bridge-command claims and the runtime capability probe's analyzer-tool unavailable message.
+- README compatibility docs now advertise all four Live 12 capability tiers, including the Live 12.4+ Collaborative tier for native Simpler sample replacement.
+- M4L bridge docs and operating contracts now distinguish the M4L `replace_sample` empty-Simpler limitation from the Live 12.4+ native `replace_sample_native` route.
+
+### Added
+
+- Added `scripts/verify_codex_plugin_sync.py` to verify the local Codex plugin active dir, versioned cache dir, mirrored manifests, `.mcp.json`, payload directories, and Local Plugins marketplace entry.
+
+### Changed
+
+- Refreshed Live 12.4.2 knowledge notes for Link Audio, stem-selection workflows, Erosion, Chorus-Ensemble, Delay LFOs, Max 9.1.4, and `SimplerDevice.replace_sample`, while keeping unprobed Link Audio/stem workflows marked as future LivePilot work.
+
+### Tests
+
+- Added drift guards for AGENTS bridge-command claims, analyzer-tool capability probe text, README Live tier docs, and Codex plugin sync verification.
+
 ## v1.26.2 — 2026-05-27
 
 Patch release for Claude/Codex plugin instruction correctness and local install reliability.

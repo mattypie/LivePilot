@@ -118,6 +118,8 @@ def build_capability_state(
     memory_ok: bool = False,
     web_ok: bool = False,
     flucoma_ok: bool = False,
+    flucoma_device_loaded: Optional[bool] = None,
+    flucoma_reasons: Optional[list[str]] = None,
 ) -> CapabilityState:
     """Build a CapabilityState from simple boolean probes.
 
@@ -200,19 +202,26 @@ def build_capability_state(
     )
 
     # ── flucoma ──────────────────────────────────────────────────────
-    # Optional dependency (the ``flucoma`` Python package).  Emitted
-    # unconditionally so consumers can distinguish "probed and missing"
-    # from "probe not run yet".
-    flucoma_reasons: list[str] = []
-    if not flucoma_ok:
-        flucoma_reasons.append("flucoma_not_installed")
+    # Max/FluCoMa real-time streams. Emitted unconditionally so consumers
+    # can distinguish "not installed" from "installed but bridge/streams
+    # are currently unavailable".
+    resolved_flucoma_device_loaded = (
+        flucoma_ok if flucoma_device_loaded is None else flucoma_device_loaded
+    )
+    resolved_flucoma_reasons = list(flucoma_reasons or [])
+    if not flucoma_ok and not resolved_flucoma_reasons:
+        resolved_flucoma_reasons.append(
+            "flucoma_no_streams"
+            if resolved_flucoma_device_loaded
+            else "flucoma_not_installed"
+        )
     domains["flucoma"] = CapabilityDomain(
         name="flucoma",
         available=flucoma_ok,
-        confidence=0.9 if flucoma_ok else 0.0,
+        confidence=0.9 if flucoma_ok else (0.2 if resolved_flucoma_device_loaded else 0.0),
         mode="available" if flucoma_ok else "unavailable",
-        reasons=flucoma_reasons,
-        device_loaded=flucoma_ok,
+        reasons=resolved_flucoma_reasons,
+        device_loaded=resolved_flucoma_device_loaded,
     )
 
     # ── research (composite) ────────────────────────────────────────

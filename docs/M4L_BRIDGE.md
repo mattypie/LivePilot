@@ -79,13 +79,13 @@ Sampling rate: 5 Hz (200ms snapshots). CPU impact: ~3-4% total.
 
 Commands are sent WITHOUT a leading `/` in the OSC address. This is critical — see "OSC Address Dispatch" below.
 
-## Bridge Commands (31 total)
+## Bridge Commands (32 total)
 
 ### Phase 1: Core LOM Access
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `ping` | (none) | Health check, returns `{ok: true, version: "1.26.2"}` |
+| `ping` | (none) | Health check, returns `{ok: true, version: "1.26.3"}` |
 | `get_version` | (none) | **Internal-only — no OSC response.** Emits the current bridge version on the Max-internal `livepilot_version` named bus so a `[r livepilot_version]` receiver in the patcher can drive the in-UI version label without touching the OSC response outlet. Whitelisted in `tests/test_bridge_parity.py:internal_only`; not in `BRIDGE_COMMANDS` (Python plans never invoke it) |
 | `get_params` | track_idx, device_idx | All parameters with value, range, automation state |
 | `get_hidden_params` | track_idx, device_idx | All parameters including hidden ones, with display string |
@@ -210,9 +210,9 @@ cursor.goto("live_set tracks 0 devices 0 sample")
 var slices = cursor.get("slices")
 ```
 
-### 5. `replace_sample` Requires Existing Sample
+### 5. M4L `replace_sample` Requires Existing Sample
 
-Loading a sample into an empty Simpler (one created via "Create empty Simpler") silently fails. The Simpler must already have a sample loaded. Workaround: load any sample via the browser first (which auto-creates a Simpler with content), then call `replace_sample`.
+Loading a sample into an empty Simpler (one created via "Create empty Simpler") silently fails through the M4L bridge path. The Simpler must already have a sample loaded. Workaround: load any sample via the browser first (which auto-creates a Simpler with content), then call `replace_sample`. On Live 12.4+, prefer the native Remote Script `replace_sample_native` route when available; it bypasses this M4L limitation.
 
 This is confirmed by Cycling '74 — there is no LiveAPI path to load a sample into a completely empty Simpler.
 
@@ -290,7 +290,7 @@ function anything() {
 
 ## File Locations
 
-- `m4l_device/LivePilot_Analyzer.amxd` — compiled M4L device (binary). Ping returns `{ok: true, version: "1.26.2"}`
+- `m4l_device/LivePilot_Analyzer.amxd` — compiled M4L device (binary). Ping returns `{ok: true, version: "1.26.3"}`
 - `m4l_device/livepilot_bridge.js` — bridge JS source (32 commands)
 - `m4l_device/LivePilot_MIDITool_Generate.amxd` / `LivePilot_MIDITool_Transform.amxd` — separate Live 12.0+ MIDI Tool devices for in-clip generators (euclidean_rhythm, tintinnabuli, humanize)
 - `m4l_device/miditool_bridge.js` — MIDI Tool bridge JS source

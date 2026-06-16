@@ -1,11 +1,11 @@
-# LivePilot v1.26.2 — Ableton Live 12
+# LivePilot v1.26.3 — Ableton Live 12
 
 ## Project
 - **Repo:** This directory (LivePilot)
 - **Type:** Agentic MCP production system for Ableton Live 12
 - **Three layers:** Device Atlas (knowledge) + M4L Analyzer (perception) + Technique Memory (learning)
 - **Sister projects:** TDPilot (TouchDesigner), ComfyPilot (ComfyUI)
-- **Design spec:** `docs/specs/2026-03-17-livepilot-design.md`
+- **Historical design snapshot:** `docs/specs/2026-03-17-livepilot-design.md` (March 2026 baseline; current truth lives in README/CLAUDE/AGENTS/manual + `scripts/sync_metadata.py`)
 
 ## Architecture
 - **Remote Script** (`remote_script/LivePilot/`): Runs inside Ableton's Python, ControlSurface base class, TCP socket on port 9878. Version detection at startup, four capability tiers: Core (12.0+), Enhanced Arrangement (12.1.10+), Full Intelligence (12.3+), Collaborative (12.4+)
@@ -13,7 +13,7 @@
 - **M4L Bridge** (`m4l_device/`): Max for Live Audio Effect on master track, UDP/OSC bridge for deep LOM access
   - UDP 9880: M4L -> Server (spectral data, responses)
   - OSC 9881: Server -> M4L (commands)
-  - `livepilot_bridge.js`: 31 bridge commands for LiveAPI access
+  - `livepilot_bridge.js`: 32 bridge commands for LiveAPI access
   - `SpectralCache`: thread-safe, time-expiring data cache (5s max age)
   - Bridge is optional — all core tools work without it
   - `ensure_analyzer_on_master` (v1.20.3) auto-loads the device on first use
@@ -45,7 +45,7 @@
 - `get()` in Max JS LiveAPI always returns arrays
 - `warp_markers` is a dict property returning JSON string — use `JSON.parse()`
 - `SimplerDevice.slices` lives on the `sample` child, not the device
-- `replace_sample` only works on Simplers with existing samples
+- M4L `replace_sample` only works on Simplers with existing samples; Live 12.4+ native `replace_sample_native` can route around that limitation when available
 - Max freezes JS from search path cache, not source directory — copy to `~/Documents/Max 9/`
 
 ## Binary Patching Workflow (.amxd)

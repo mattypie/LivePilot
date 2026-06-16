@@ -37,6 +37,18 @@ def _make_ctx(spectral=None):
     )
 
 
+class _Spectral:
+    def __init__(self, *, connected=True, values=None):
+        self.is_connected = connected
+        self._values = values or {}
+
+    def get(self, key):
+        value = self._values.get(key)
+        if value is None:
+            return None
+        return {"value": value}
+
+
 # ── Task B1: web probe ──────────────────────────────────────────────────
 
 
@@ -88,13 +100,13 @@ def test_web_probe_helper_swallows_exceptions(monkeypatch):
 # ── Task B2: flucoma probe ──────────────────────────────────────────────
 
 
-def test_flucoma_domain_present_when_importable(monkeypatch):
-    """When flucoma is importable, a flucoma domain is emitted as available."""
+def test_flucoma_domain_present_when_streams_are_active(monkeypatch):
+    """When FluCoMa streams are active, the domain is emitted as available."""
     from mcp_server.runtime import tools as runtime_tools
 
-    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda: True)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma_package", lambda: True)
 
-    ctx = _make_ctx()
+    ctx = _make_ctx(_Spectral(values={"spectral_shape": {"centroid": 900.0}}))
     result = runtime_tools.get_capability_state(ctx)
 
     domains = result["capability_state"]["domains"]
@@ -103,13 +115,15 @@ def test_flucoma_domain_present_when_importable(monkeypatch):
     )
     assert domains["flucoma"]["available"] is True
     assert domains["flucoma"]["mode"] == "available"
+    assert domains["flucoma"]["device_loaded"] is True
+    assert domains["flucoma"]["reasons"] == []
 
 
-def test_flucoma_domain_unavailable_when_not_installed(monkeypatch):
-    """When flucoma is not importable, the domain still emits but unavailable."""
+def test_flucoma_domain_installed_but_bridge_unavailable(monkeypatch):
+    """Installed Max package should not be misreported as not installed."""
     from mcp_server.runtime import tools as runtime_tools
 
-    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda: False)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma_package", lambda: True)
 
     ctx = _make_ctx()
     result = runtime_tools.get_capability_state(ctx)
@@ -117,29 +131,40 @@ def test_flucoma_domain_unavailable_when_not_installed(monkeypatch):
     domains = result["capability_state"]["domains"]
     assert "flucoma" in domains
     assert domains["flucoma"]["available"] is False
+    assert domains["flucoma"]["device_loaded"] is True
+    assert "flucoma_bridge_unavailable" in domains["flucoma"]["reasons"]
+    assert "flucoma_not_installed" not in domains["flucoma"]["reasons"]
+
+
+def test_flucoma_domain_unavailable_when_not_installed(monkeypatch):
+    """When the Max package is missing, the domain says not installed."""
+    from mcp_server.runtime import tools as runtime_tools
+
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma_package", lambda: False)
+
+    ctx = _make_ctx()
+    result = runtime_tools.get_capability_state(ctx)
+
+    domains = result["capability_state"]["domains"]
+    assert "flucoma" in domains
+    assert domains["flucoma"]["available"] is False
+    assert domains["flucoma"]["device_loaded"] is False
     assert "flucoma_not_installed" in domains["flucoma"]["reasons"]
 
 
-def test_flucoma_probe_helper_uses_find_spec(monkeypatch):
-    """The flucoma probe must consult importlib.util.find_spec (no hard import).
-
-    Hard `import flucoma` at module load would crash CI. We require find_spec
-    (None -> False) so the probe stays zero-side-effect.
-    """
-    import importlib.util
-
+def test_flucoma_probe_streams_prove_available_even_without_package(monkeypatch):
+    """Frozen analyzers can work even when no global Max package is present."""
     from mcp_server.runtime import tools as runtime_tools
 
-    # Simulate no spec: probe must be False, no exception.
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-    assert runtime_tools._probe_flucoma() is False
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma_package", lambda: False)
+    probe = runtime_tools._probe_flucoma(
+        _Spectral(values={"mel_bands": [0.0, 0.1, 0.2]})
+    )
 
-    # Simulate a spec present
-    class _Spec:  # pragma: no cover - trivial sentinel
-        pass
-
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: _Spec())
-    assert runtime_tools._probe_flucoma() is True
+    assert probe["available"] is True
+    assert probe["device_loaded"] is True
+    assert probe["active_streams"] == 1
+    assert probe["reasons"] == []
 
 
 # ── P2#3 (v1.17.3) — probes must propagate through get_session_kernel ──
@@ -159,7 +184,7 @@ def test_session_kernel_surfaces_web_probe_result(monkeypatch):
 
     monkeypatch.setattr(runtime_tools, "_probe_web", lambda timeout=0.5: True)
     # Keep flucoma default (off) to isolate the web signal
-    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda: False)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda spectral=None: False)
 
     ctx = _make_ctx()
     kernel = runtime_tools.get_session_kernel(ctx)
@@ -184,7 +209,7 @@ def test_session_kernel_surfaces_flucoma_probe_result(monkeypatch):
     from mcp_server.runtime import tools as runtime_tools
 
     monkeypatch.setattr(runtime_tools, "_probe_web", lambda timeout=0.5: False)
-    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda: True)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda spectral=None: True)
 
     ctx = _make_ctx()
     kernel = runtime_tools.get_session_kernel(ctx)
@@ -204,7 +229,7 @@ def test_session_kernel_reports_both_unavailable_when_probes_false(monkeypatch):
     from mcp_server.runtime import tools as runtime_tools
 
     monkeypatch.setattr(runtime_tools, "_probe_web", lambda timeout=0.5: False)
-    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda: False)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda spectral=None: False)
 
     ctx = _make_ctx()
     kernel = runtime_tools.get_session_kernel(ctx)
@@ -294,7 +319,7 @@ def test_kernel_capability_state_is_flat_not_double_nested(monkeypatch):
     from mcp_server.runtime import tools as runtime_tools
 
     monkeypatch.setattr(runtime_tools, "_probe_web", lambda timeout=0.5: False)
-    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda: False)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda spectral=None: False)
 
     ctx = _make_ctx()
     kernel = runtime_tools.get_session_kernel(ctx)
