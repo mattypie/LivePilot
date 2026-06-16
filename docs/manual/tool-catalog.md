@@ -1,6 +1,6 @@
 # LivePilot — Full Tool Catalog (Generated)
 
-465 tools across 56 domains.
+467 tools across 56 domains.
 
 > Auto-generated from `mcp.list_tools()`. Do not hand-edit.
 > Regenerate: `python3 scripts/generate_tool_catalog.py`
@@ -513,7 +513,7 @@
 | `get_style_tactics` | Get production tactics for a specific artist style or genre. |
 | `research_technique` | Research a production technique — search device atlas + memory for answers. |
 
-## Runtime (5)
+## Runtime (7)
 
 | Tool | Description |
 |------|-------------|
@@ -522,6 +522,8 @@
 | `get_capability_state` | Probe the runtime and return a capability state snapshot. |
 | `get_last_move` | Return the most recent semantic move from the action ledger. |
 | `get_session_kernel` | Build the unified turn snapshot for V2 orchestration. |
+| `probe_link_audio` | Read-only probe for Live 12.4 Link Audio MCP controllability. |
+| `probe_stem_workflow` | Read-only probe for Live 12.4 selected-time stem workflow support. |
 
 ## Sample Engine (23)
 
@@ -753,4 +755,4 @@
 | `rank_wonder_variants` | Rank wonder-mode variants by taste + identity + novelty + coherence. |
 
 ---
-*Generated from 465 registered tools.*
+*Generated from 467 registered tools.*

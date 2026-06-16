@@ -31,9 +31,21 @@ class _Ableton:
         return {}
 
 
-def _make_ctx(spectral=None):
+class _Ableton124(_Ableton):
+    def send_command(self, cmd, params=None):
+        if cmd == "get_session_info":
+            return {
+                "tempo": 120,
+                "track_count": 0,
+                "tracks": [],
+                "live_version": "12.4.2",
+            }
+        return {}
+
+
+def _make_ctx(spectral=None, ableton=None):
     return SimpleNamespace(
-        lifespan_context={"ableton": _Ableton(), "spectral": spectral},
+        lifespan_context={"ableton": ableton or _Ableton(), "spectral": spectral},
     )
 
 
@@ -359,3 +371,126 @@ def test_kernel_flat_shape_preserves_domain_access():
 
     assert session["available"] is True  # _Ableton returns a valid session_info
     assert session["name"] == "session_access"
+
+
+# ── v1.27.0 — Live 12.4 probe-first capability surfaces ────────────────
+
+
+def test_probe_link_audio_reports_manual_only_without_routing_evidence(monkeypatch):
+    """The public probe can succeed while still refusing to claim routing support."""
+    from mcp_server.runtime import tools as runtime_tools
+
+    monkeypatch.setattr(
+        runtime_tools,
+        "_probe_link_audio_surface",
+        lambda ableton, session_info=None: {
+            "mode": "manual_only",
+            "available": False,
+            "reasons": ["link_audio_not_exposed"],
+            "observed": {"peers_visible": False, "inputs_visible": False},
+        },
+    )
+
+    result = runtime_tools.probe_link_audio(_make_ctx(ableton=_Ableton124()))
+
+    assert result["ok"] is True
+    assert result["live_version"] == "12.4.2"
+    assert result["mode"] == "manual_only"
+    assert result["available"] is False
+    assert "link_audio_not_exposed" in result["reasons"]
+    assert result["observed"]["peers_visible"] is False
+
+
+def test_probe_stem_workflow_reports_callable_when_probe_finds_command(monkeypatch):
+    from mcp_server.runtime import tools as runtime_tools
+
+    monkeypatch.setattr(
+        runtime_tools,
+        "_probe_stem_workflow_surface",
+        lambda ableton, session_info=None: {
+            "mode": "callable",
+            "available": True,
+            "reasons": [],
+            "observed": {"callable_paths": ["selected_time_context_command"]},
+        },
+    )
+
+    result = runtime_tools.probe_stem_workflow(_make_ctx(ableton=_Ableton124()))
+
+    assert result["ok"] is True
+    assert result["live_version"] == "12.4.2"
+    assert result["mode"] == "callable"
+    assert result["available"] is True
+    assert result["observed"]["callable_paths"] == ["selected_time_context_command"]
+
+
+def test_capability_state_surfaces_link_and_stem_probe_modes(monkeypatch):
+    from mcp_server.runtime import tools as runtime_tools
+
+    monkeypatch.setattr(runtime_tools, "_probe_web", lambda timeout=0.5: False)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda spectral=None: False)
+    monkeypatch.setattr(
+        runtime_tools,
+        "_probe_link_audio_surface",
+        lambda ableton, session_info=None: {
+            "mode": "routable",
+            "available": True,
+            "reasons": [],
+            "observed": {"peers_visible": True, "inputs_visible": True},
+        },
+    )
+    monkeypatch.setattr(
+        runtime_tools,
+        "_probe_stem_workflow_surface",
+        lambda ableton, session_info=None: {
+            "mode": "manual_only",
+            "available": False,
+            "reasons": ["stem_command_not_observable"],
+            "observed": {"callable_paths": []},
+        },
+    )
+
+    ctx = _make_ctx(ableton=_Ableton124())
+    result = runtime_tools.get_capability_state(ctx)
+
+    domains = result["capability_state"]["domains"]
+    assert domains["link_audio"]["mode"] == "routable"
+    assert domains["link_audio"]["available"] is True
+    assert domains["stem_workflow"]["mode"] == "manual_only"
+    assert domains["stem_workflow"]["available"] is False
+    assert "stem_command_not_observable" in domains["stem_workflow"]["reasons"]
+
+
+def test_session_kernel_surfaces_operation_profile_and_probe_domains(monkeypatch):
+    from mcp_server.runtime import tools as runtime_tools
+
+    monkeypatch.setattr(runtime_tools, "_probe_web", lambda timeout=0.5: False)
+    monkeypatch.setattr(runtime_tools, "_probe_flucoma", lambda spectral=None: False)
+    monkeypatch.setattr(
+        runtime_tools,
+        "_probe_link_audio_surface",
+        lambda ableton, session_info=None: {
+            "mode": "manual_only",
+            "available": False,
+            "reasons": ["link_audio_not_exposed"],
+        },
+    )
+    monkeypatch.setattr(
+        runtime_tools,
+        "_probe_stem_workflow_surface",
+        lambda ableton, session_info=None: {
+            "mode": "manual_only",
+            "available": False,
+            "reasons": ["stem_workflow_unprobed"],
+        },
+    )
+
+    kernel = runtime_tools.get_session_kernel(
+        _make_ctx(ableton=_Ableton124()),
+        operation_profile="sound_design_deep",
+    )
+
+    assert kernel["operation_profile"] == "sound_design_deep"
+    domains = kernel["capability_state"]["domains"]
+    assert domains["link_audio"]["mode"] == "manual_only"
+    assert domains["stem_workflow"]["mode"] == "manual_only"

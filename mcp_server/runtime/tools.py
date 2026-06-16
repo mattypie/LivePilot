@@ -11,7 +11,7 @@ import logging
 import os
 from pathlib import Path
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 from fastmcp import Context
 
@@ -170,6 +170,186 @@ def _run_flucoma_probe(spectral=None) -> dict:
         return _normalize_flucoma_probe(_probe_flucoma())
 
 
+def _session_info(ableton) -> dict:
+    try:
+        info = ableton.send_command("get_session_info")
+        return info if isinstance(info, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_session_info probe failed: %s", exc)
+        return {}
+
+
+def _live_version_from_session(session_info: dict) -> str:
+    version = session_info.get("live_version")
+    return str(version) if version else "12.0.0"
+
+
+def _normalize_probe_surface(
+    raw: Any,
+    *,
+    default_reason: str,
+    default_mode: str = "manual_only",
+) -> dict:
+    if isinstance(raw, dict):
+        mode = str(raw.get("mode") or default_mode)
+        available = bool(raw.get("available", mode in {"readable", "routable", "callable"}))
+        reasons = list(raw.get("reasons") or [])
+        if not available and not reasons:
+            reasons.append(default_reason)
+        return {
+            "mode": mode,
+            "available": available,
+            "reasons": reasons,
+            "observed": dict(raw.get("observed") or {}),
+        }
+    return {
+        "mode": default_mode,
+        "available": False,
+        "reasons": [default_reason],
+        "observed": {},
+    }
+
+
+def _probe_link_audio_surface(ableton, session_info: Optional[dict] = None) -> dict:
+    """Read-only Link Audio surface probe.
+
+    Current Live 12.4 builds expose Link Audio as product UX, but no stable
+    Remote Script/M4L routing contract has been proven. This helper looks for
+    explicit evidence if future Remote Scripts surface it; otherwise it reports
+    manual_only with a reason instead of claiming support from version alone.
+    """
+    info = session_info or _session_info(ableton)
+    observed = {
+        "peers_visible": bool(info.get("link_audio_peers") or info.get("link_peers")),
+        "inputs_visible": bool(info.get("link_audio_inputs") or info.get("audio_inputs")),
+        "routing_visible": bool(info.get("link_audio_routing")),
+    }
+    if observed["peers_visible"] and observed["inputs_visible"] and observed["routing_visible"]:
+        return {
+            "mode": "routable",
+            "available": True,
+            "reasons": [],
+            "observed": observed,
+        }
+    if observed["peers_visible"] or observed["inputs_visible"]:
+        return {
+            "mode": "readable",
+            "available": True,
+            "reasons": [],
+            "observed": observed,
+        }
+    return {
+        "mode": "manual_only",
+        "available": False,
+        "reasons": ["link_audio_not_exposed"],
+        "observed": observed,
+    }
+
+
+def _probe_stem_workflow_surface(ableton, session_info: Optional[dict] = None) -> dict:
+    """Read-only selected-time stem workflow probe.
+
+    This intentionally does not invoke stem separation. It only reports
+    callable evidence if a future Remote Script/M4L surface advertises a
+    stable command path.
+    """
+    info = session_info or _session_info(ableton)
+    callable_paths = list(info.get("stem_callable_paths") or [])
+    if callable_paths:
+        return {
+            "mode": "callable",
+            "available": True,
+            "reasons": [],
+            "observed": {"callable_paths": callable_paths},
+        }
+    return {
+        "mode": "manual_only",
+        "available": False,
+        "reasons": ["stem_command_not_observable"],
+        "observed": {"callable_paths": []},
+    }
+
+
+def _probe_live_12_4_domain(
+    *,
+    ableton,
+    session_info: dict,
+    feature_available: bool,
+    surface_probe,
+    default_reason: str,
+) -> dict:
+    live_version = _live_version_from_session(session_info)
+    if not feature_available:
+        return {
+            "ok": True,
+            "live_version": live_version,
+            "mode": "unavailable",
+            "available": False,
+            "reasons": ["live_version_below_12_4"],
+            "observed": {},
+        }
+    try:
+        surface = _normalize_probe_surface(
+            surface_probe(ableton, session_info=session_info),
+            default_reason=default_reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Live 12.4 surface probe failed: %s", exc)
+        surface = {
+            "mode": "manual_only",
+            "available": False,
+            "reasons": [f"probe_failed: {type(exc).__name__}"],
+            "observed": {},
+        }
+    return {
+        "ok": True,
+        "live_version": live_version,
+        **surface,
+    }
+
+
+def _probe_link_audio_domain(ableton, session_info: dict) -> dict:
+    from .live_version import LiveVersionCapabilities
+
+    caps = LiveVersionCapabilities.from_session_info(session_info)
+    return _probe_live_12_4_domain(
+        ableton=ableton,
+        session_info=session_info,
+        feature_available=caps.has_link_audio,
+        surface_probe=_probe_link_audio_surface,
+        default_reason="link_audio_not_exposed",
+    )
+
+
+def _probe_stem_workflow_domain(ableton, session_info: dict) -> dict:
+    from .live_version import LiveVersionCapabilities
+
+    caps = LiveVersionCapabilities.from_session_info(session_info)
+    return _probe_live_12_4_domain(
+        ableton=ableton,
+        session_info=session_info,
+        feature_available=caps.has_stem_time_selection,
+        surface_probe=_probe_stem_workflow_surface,
+        default_reason="stem_command_not_observable",
+    )
+
+
+@mcp.tool()
+def probe_link_audio(ctx: Context) -> dict:
+    """Read-only probe for Live 12.4 Link Audio MCP controllability."""
+    ableton = ctx.lifespan_context["ableton"]
+    session_info = _session_info(ableton)
+    return _probe_link_audio_domain(ableton, session_info)
+
+
+@mcp.tool()
+def probe_stem_workflow(ctx: Context) -> dict:
+    """Read-only probe for Live 12.4 selected-time stem workflow support."""
+    ableton = ctx.lifespan_context["ableton"]
+    session_info = _session_info(ableton)
+    return _probe_stem_workflow_domain(ableton, session_info)
+
+
 @mcp.tool()
 def get_capability_state(ctx: Context) -> dict:
     """Probe the runtime and return a capability state snapshot.
@@ -181,13 +361,8 @@ def get_capability_state(ctx: Context) -> dict:
     spectral = ctx.lifespan_context.get("spectral")
 
     # ── Probe session ───────────────────────────────────────────────
-    session_ok = False
-    try:
-        result = ableton.send_command("get_session_info")
-        session_ok = isinstance(result, dict) and "error" not in result
-    except Exception as exc:
-        logger.debug("get_capability_state failed: %s", exc)
-        session_ok = False
+    session_info = _session_info(ableton)
+    session_ok = bool(session_info) and "error" not in session_info
 
     # ── Probe analyzer (M4L bridge) ─────────────────────────────────
     analyzer_ok = False
@@ -216,6 +391,10 @@ def get_capability_state(ctx: Context) -> dict:
     # ── FluCoMa — Max package + live bridge streams ─────────────────
     flucoma_probe = _run_flucoma_probe(spectral)
 
+    # ── Live 12.4 probe-first surfaces ──────────────────────────────
+    link_probe = _probe_link_audio_domain(ableton, session_info)
+    stem_probe = _probe_stem_workflow_domain(ableton, session_info)
+
     state = build_capability_state(
         session_ok=session_ok,
         analyzer_ok=analyzer_ok,
@@ -225,6 +404,10 @@ def get_capability_state(ctx: Context) -> dict:
         flucoma_ok=flucoma_probe["available"],
         flucoma_device_loaded=flucoma_probe["device_loaded"],
         flucoma_reasons=flucoma_probe["reasons"],
+        link_audio_mode=link_probe["mode"],
+        link_audio_reasons=link_probe["reasons"],
+        stem_workflow_mode=stem_probe["mode"],
+        stem_workflow_reasons=stem_probe["reasons"],
     )
 
     return state.to_dict()
@@ -240,6 +423,7 @@ def get_session_kernel(
     creativity_profile: str = "",
     sacred_elements: Optional[list] = None,
     synth_hints: Optional[dict] = None,
+    operation_profile: str = "studio_deep",
 ) -> dict:
     """Build the unified turn snapshot for V2 orchestration.
 
@@ -265,6 +449,9 @@ def get_session_kernel(
       synth_hints: focus hints for synthesis_brain; shape is open in PR2
         and firms up in PR9. Typical keys: track_indices, device_paths,
         target_timbre, preferred_devices.
+      operation_profile: safety/intent posture for this turn. Known values:
+        safe_live, studio_deep, arrangement_build, sound_design_deep,
+        release_audit.
 
     Returns: SessionKernel dict with kernel_id, session topology, capabilities,
     memory context, routing hints, and (if provided) creative controls.
@@ -290,6 +477,8 @@ def get_session_kernel(
     # lies to orchestration planners.
     web_ok = _probe_web()
     flucoma_probe = _run_flucoma_probe(spectral)
+    link_probe = _probe_link_audio_domain(ableton, session_info if isinstance(session_info, dict) else {})
+    stem_probe = _probe_stem_workflow_domain(ableton, session_info if isinstance(session_info, dict) else {})
 
     # v1.17.4: probe memory the same way too. Previously memory_ok=True was
     # hardcoded — if the store raised, the kernel still reported memory
@@ -310,6 +499,10 @@ def get_session_kernel(
         flucoma_ok=flucoma_probe["available"],
         flucoma_device_loaded=flucoma_probe["device_loaded"],
         flucoma_reasons=flucoma_probe["reasons"],
+        link_audio_mode=link_probe["mode"],
+        link_audio_reasons=link_probe["reasons"],
+        stem_workflow_mode=stem_probe["mode"],
+        stem_workflow_reasons=stem_probe["reasons"],
     )
 
     # Optional subcomponents — degrade gracefully, but reach into the SAME
@@ -394,6 +587,7 @@ def get_session_kernel(
         anti_preferences=anti_prefs,
         freshness=freshness,
         creativity_profile=creativity_profile,
+        operation_profile=operation_profile,
         sacred_elements=sacred_elements,
         synth_hints=synth_hints,
     )

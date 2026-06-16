@@ -111,7 +111,9 @@ Call `get_capability_state` at the start of any evaluation session. The response
       "memory":         {"name": "memory",         "available": true,  "confidence": 1.0, "mode": "available",   "reasons": []},
       "web":            {"name": "web",            "available": true,  "confidence": 0.7, "mode": "available",   "reasons": []},
       "research":       {"name": "research",       "available": true,  "confidence": 0.9, "mode": "available",   "reasons": []},
-      "flucoma":        {"name": "flucoma",        "available": false, "confidence": 0.2, "mode": "unavailable", "reasons": ["flucoma_bridge_unavailable"], "device_loaded": true}
+      "flucoma":        {"name": "flucoma",        "available": false, "confidence": 0.2, "mode": "unavailable", "reasons": ["flucoma_bridge_unavailable"], "device_loaded": true},
+      "link_audio":     {"name": "link_audio",     "available": false, "confidence": 0.2, "mode": "manual_only", "reasons": ["link_audio_unprobed"]},
+      "stem_workflow":  {"name": "stem_workflow",  "available": false, "confidence": 0.2, "mode": "manual_only", "reasons": ["stem_workflow_unprobed"]}
     }
   }
 }
@@ -127,7 +129,7 @@ Call `get_capability_state` at the start of any evaluation session. The response
 
 Every entry in `domains` has the same shape:
 
-- `name`: the domain key (`"session_access"`, `"analyzer"`, `"memory"`, `"web"`, `"research"`, `"flucoma"`).
+- `name`: the domain key (`"session_access"`, `"analyzer"`, `"memory"`, `"web"`, `"research"`, `"flucoma"`, `"link_audio"`, `"stem_workflow"`).
 - `available`: boolean — is this capability ready to use right now?
 - `confidence`: 0.0–1.0 — how much to trust the `available` flag (e.g. stale analyzer data lowers confidence).
 - `mode`: short human label specific to the domain (`"healthy"`, `"available"`, `"measured"`, `"stale"`, `"targeted_only"`, `"full"`, `"unavailable"`).
@@ -142,6 +144,8 @@ Every entry in `domains` has the same shape:
 - **web** — server-side outbound HTTP capability. True when the MCP host can reach an arbitrary public URL (probed by a 500 ms HEAD request to `https://api.github.com`). Does NOT imply curated research corpora are installed — see the `research` domain for that.
 - **research** — composite over `session_access`, `memory`, and `web`. `mode="full"` when all three are available; `"targeted_only"` when at least one source is up; `"unavailable"` when nothing is reachable.
 - **flucoma** — Max/FluCoMa real-time stream readiness. `device_loaded=true` means the FluidCorpusManipulation Max package is installed, or active streams prove a frozen analyzer is working. `available=true` requires at least one FluCoMa stream (`spectral_shape`, `mel_bands`, `chroma`, `onset`, `novelty`, or `loudness`) to have reached the M4L spectral cache. FluCoMa-backed tools (`check_flucoma`, `extract_timbre_fingerprint`, etc.) degrade gracefully when this domain is unavailable.
+- **link_audio** — Live 12.4 Link Audio capability. `probe_link_audio` is read-only and reports `mode="manual_only"` until peer/input/routing evidence proves the surface is readable or routable. Version number alone never makes this domain available.
+- **stem_workflow** — Live 12.4 selected-time stem separation / merge capability. `probe_stem_workflow` is read-only and reports `mode="manual_only"` until a stable callable path is observed. Stem tools must not run on full tracks/clips by default.
 
 ## Collaborative Mode (Live 12.4+)
 
@@ -169,12 +173,10 @@ Live 12.4 introduces a new capability tier that unlocks native LOM access for sa
 **Tool signatures:** unchanged. Callers do not need to detect the tier —
 routing is transparent.
 
-**Follow-up plans (not yet shipped):**
-- Link Audio (real-time audio streaming between Link peers) exists in
-  Live 12.4+, but LivePilot does not yet expose a probed MCP workflow
-  for configuring or recording Link Audio.
-- Selected-time stem separation and stem merge exist in Live 12.4+, but
-  LivePilot has not yet validated a stable LOM/MCP route for invoking
-  those commands.
-Neither is exposed in the 1.26.3 release — still pending for a dedicated
-1.27.0 probe pass.
+**Probe-first 12.4 surfaces in v1.27.0:**
+- `probe_link_audio()` reports observed peer/input/routing visibility and
+  returns `manual_only`, `readable`, `routable`, or `unavailable`.
+- `probe_stem_workflow()` reports observed callable paths and returns
+  `manual_only`, `callable`, or `unavailable`.
+- Write workflows are intentionally absent unless a real Live probe proves
+  a stable non-UI-scripted route.

@@ -631,7 +631,7 @@ def test_control_surfaces_tools_registered():
 def test_total_tool_count():
     from mcp_server.server import mcp
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 465, f"Expected 465 tools, got {len(tools)}"
+    assert len(tools) == 467, f"Expected 467 tools, got {len(tools)}"
 
 
 def test_grader_tools_registered():
@@ -885,6 +885,8 @@ def test_session_kernel_tools_registered():
     expected = {
         "get_session_kernel",
         "get_capability_state",
+        "probe_link_audio",
+        "probe_stem_workflow",
     }
     missing = expected - names
     assert not missing, f"Missing session kernel tools: {missing}"

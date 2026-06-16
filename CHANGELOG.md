@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.27.0 — 2026-06-16
+
+Probe-first Live 12.4 capability release.
+
+### Added
+
+- Added read-only `probe_link_audio()` and `probe_stem_workflow()` runtime tools. They report observed capability modes and reasons without invoking UI scripting, menu automation, or destructive stem operations.
+- Added `link_audio` and `stem_workflow` capability domains to `get_capability_state()` and `get_session_kernel()`. Both default to `manual_only` unless a real probe supplies routable/callable evidence.
+- Added Live 12.4 version flags for Link Audio, selected-time stem separation, and merge-selected-stems while keeping workflow support probe-gated.
+- Added `operation_profile` to the session kernel with `studio_deep` as the legacy default and profile names for `safe_live`, `arrangement_build`, `sound_design_deep`, and `release_audit`.
+
+### Changed
+
+- `replace_simpler_sample()` and `load_sample_to_simpler()` now report `native_attempted`, `bridge_attempted`, and `fallback_reason` so native-vs-bridge behavior is observable during Live 12.4 sample workflows.
+- Creative Director guidance now includes a Producer Decision Center: library hunt before loading, inspect enriched atlas hits, avoid Analog/Poli/Drift filler unless explicitly requested, and require instrument/source-level programming before effects-only polish.
+- Capability-mode docs now describe the new Link Audio and stem workflow probe domains instead of treating them as undocumented future work.
+
+### Tests
+
+- Added coverage for Live 12.4 version flags, Link/stem capability domains and probe tools, session-kernel operation profiles, sample fallback reporting, and Producer Decision Center contract text.
+
 ## v1.26.3 — 2026-06-16
 
 Truth/knowledge patch for Live 12.4.2, local Codex plugin sync, and runtime capability reporting.

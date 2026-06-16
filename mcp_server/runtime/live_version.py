@@ -73,6 +73,21 @@ class LiveVersionCapabilities:
         return self._version_tuple >= (12, 3, 0)
 
     @property
+    def has_link_audio(self) -> bool:
+        """Live 12.4 Link Audio UX exists; MCP control remains probe-gated."""
+        return self._version_tuple >= (12, 4, 0)
+
+    @property
+    def has_stem_time_selection(self) -> bool:
+        """Live 12.4 selected-time stem separation UX exists; probe before use."""
+        return self._version_tuple >= (12, 4, 0)
+
+    @property
+    def has_stem_merge_selected(self) -> bool:
+        """Live 12.4 merge-selected-stems UX exists; probe before use."""
+        return self._version_tuple >= (12, 4, 0)
+
+    @property
     def has_replace_sample_native(self) -> bool:
         """SimplerDevice.replace_sample(path) — 12.4+"""
         return self._version_tuple >= (12, 4, 0)
@@ -100,5 +115,8 @@ class LiveVersionCapabilities:
             "drum_rack_construction": self.has_drum_rack_construction,
             "take_lanes": self.has_take_lanes,
             "stem_separation": self.has_stem_separation,
+            "link_audio": self.has_link_audio,
+            "stem_time_selection": self.has_stem_time_selection,
+            "stem_merge_selected": self.has_stem_merge_selected,
             "replace_sample_native": self.has_replace_sample_native,
         }

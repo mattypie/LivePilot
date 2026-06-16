@@ -100,8 +100,27 @@ def test_has_replace_sample_native_12_3_6():
     assert caps.has_replace_sample_native is False
 
 
+def test_live_12_4_flags_link_audio_and_selected_time_stems_as_version_known():
+    """12.4 introduces Link Audio and selected-time stem UX, but runtime
+    support is still probe-gated elsewhere."""
+    caps = LiveVersionCapabilities(12, 4, 2)
+    assert caps.has_link_audio is True
+    assert caps.has_stem_time_selection is True
+    assert caps.has_stem_merge_selected is True
+
+
+def test_live_12_3_does_not_claim_12_4_link_or_selected_time_stem_features():
+    caps = LiveVersionCapabilities(12, 3, 6)
+    assert caps.has_link_audio is False
+    assert caps.has_stem_time_selection is False
+    assert caps.has_stem_merge_selected is False
+
+
 def test_to_dict_12_4_includes_collaborative_and_native():
     caps = LiveVersionCapabilities(12, 4, 0)
     d = caps.to_dict()
     assert d["capability_tier"] == "collaborative"
     assert d["replace_sample_native"] is True
+    assert d["link_audio"] is True
+    assert d["stem_time_selection"] is True
+    assert d["stem_merge_selected"] is True
