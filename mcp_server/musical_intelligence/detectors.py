@@ -337,6 +337,9 @@ def infer_section_purposes(
         if position < 0.15 and density < 0.5:
             purpose = "setup"
             confidence = 0.7
+        elif density >= 0.8 and density_delta >= 0:
+            purpose = "payoff"
+            confidence = 0.65
         elif density_delta > 0.2:
             purpose = "tension"
             confidence = 0.6
