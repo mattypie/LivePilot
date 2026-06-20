@@ -30,12 +30,18 @@ def _write_plugin_tree(path: Path, manifest: dict) -> None:
             encoding="utf-8",
         )
 
+    # Absolute Node command path, valid on the running OS. A hardcoded POSIX
+    # path ("/usr/local/bin/node") is NOT absolute on Windows —
+    # Path(...).is_absolute() is False without a drive letter — which made the
+    # verifier flag a complete install as broken on windows-latest. Anchor to
+    # the install path's drive so the fixture is absolute on every platform.
+    node_command = str(Path(path.anchor) / "usr" / "local" / "bin" / "node")
     (path / ".mcp.json").write_text(
         json.dumps(
             {
                 "mcpServers": {
                     "livepilot": {
-                        "command": "/usr/local/bin/node",
+                        "command": node_command,
                         "args": [str(REPO_ROOT / "bin" / "livepilot.js")],
                     }
                 }
