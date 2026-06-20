@@ -341,6 +341,37 @@ def test_detect_installed_plugins_against_fake_folder(tmp_path):
     assert detected[0].format == "VST3"
 
 
+def test_detect_installed_plugins_recurses_vendor_subfolders(tmp_path):
+    """#44: plugins nested in vendor subfolders must be found, and the vendor
+    folders themselves must NOT be emitted as junk 'unknown-*' records.
+
+    Before the recursive-walk fix, the scanner flat-listed the scan root:
+    nested bundles were invisible and each vendor folder fell through to
+    _fallback_identity, polluting the inventory with bogus entries.
+    """
+    vst3 = tmp_path / "VST3"
+    # top-level bundle (must still be found)
+    (vst3 / "Top.vst3" / "Contents").mkdir(parents=True)
+    # one level deep in a vendor folder (the exact reported scenario)
+    (vst3 / "Arturia" / "Analog Lab V.vst3" / "Contents").mkdir(parents=True)
+    # two levels deep
+    (vst3 / "Native Instruments" / "Massive" / "Massive X.vst3" / "Contents").mkdir(parents=True)
+
+    detected = detect_installed_plugins(paths=[(vst3, "VST3")], use_auval=False)
+    names = {p.name for p in detected}
+
+    assert "Top" in names
+    assert "Analog Lab V" in names            # nested — previously missed
+    assert "Massive X" in names               # deeper nested — previously missed
+    # vendor folders must NOT be emitted as plugins
+    assert "Arturia" not in names
+    assert "Native Instruments" not in names
+    assert "Massive" not in names
+    assert not any(p.plugin_id.startswith("unknown-arturia") for p in detected)
+    # exactly the 3 real bundles, no vendor-folder junk
+    assert len(detected) == 3
+
+
 def test_discover_manuals_finds_pdf_in_bundle(tmp_path):
     """A manual.pdf inside the bundle's Resources should be the top candidate."""
     bundle = tmp_path / "Plugin.vst3"
