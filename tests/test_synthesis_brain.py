@@ -140,13 +140,14 @@ class TestWavetableAdapter:
             device_name="Wavetable",
             track_index=3,
             device_index=0,
-            parameter_state={"Osc 1 Position": 0.2},
+            parameter_state={"Osc 1 Pos": 0.2},
         )
         pairs = propose_synth_branches(profile)
         _seed, plan = pairs[0]
         assert plan["step_count"] == 1
         assert plan["steps"][0]["tool"] == "set_device_parameter"
-        assert plan["steps"][0]["params"]["parameter_name"] == "Osc 1 Position"
+        # Real Ableton Wavetable param is "Osc 1 Pos" (not "...Position").
+        assert plan["steps"][0]["params"]["parameter_name"] == "Osc 1 Pos"
 
     def test_width_branch_skipped_when_already_thick(self):
         profile = analyze_synth_patch(
