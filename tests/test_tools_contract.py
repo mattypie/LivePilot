@@ -1,4 +1,4 @@
-"""Verify all 465 MCP tools are registered (Phase 2c grader: +3 grader tools since v1.25.0)."""
+"""Verify all 467 MCP tools are registered (v1.27: +2 runtime capability-probe tools)."""
 
 import asyncio
 import sys

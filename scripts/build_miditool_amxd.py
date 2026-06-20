@@ -17,8 +17,16 @@ import shutil
 import os
 
 
-TEMPLATE_DIR = "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Misc/Max MIDI Tools"
-PROJECT_M4L = "/Users/visansilviugeorge/Desktop/DREAM AI/LivePilot/m4l_device"
+# System Ableton template dir; override with LIVEPILOT_MIDI_TOOLS_TEMPLATE_DIR.
+TEMPLATE_DIR = os.environ.get(
+    "LIVEPILOT_MIDI_TOOLS_TEMPLATE_DIR",
+    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Misc/Max MIDI Tools",
+)
+# Repo m4l_device dir, derived from this file so the script is portable.
+PROJECT_M4L = os.environ.get(
+    "LIVEPILOT_M4L_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "m4l_device"),
+)
 USER_LIB_GEN = os.path.expanduser("~/Music/Ableton/User Library/MIDI Tools/Max Generators")
 USER_LIB_TRANS = os.path.expanduser("~/Music/Ableton/User Library/MIDI Tools/Max Transformations")
 
@@ -324,51 +332,57 @@ def build(template_path: str, output_path: str, variant: str):
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
-os.makedirs(USER_LIB_GEN, exist_ok=True)
-os.makedirs(USER_LIB_TRANS, exist_ok=True)
+def main():
+    os.makedirs(USER_LIB_GEN, exist_ok=True)
+    os.makedirs(USER_LIB_TRANS, exist_ok=True)
 
-# Build in project
-build(f"{TEMPLATE_DIR}/Max MIDI Generator.amxd",
-      f"{PROJECT_M4L}/LivePilot_MIDITool_Generate.amxd",
-      "generate")
-build(f"{TEMPLATE_DIR}/Max MIDI Transformation.amxd",
-      f"{PROJECT_M4L}/LivePilot_MIDITool_Transform.amxd",
-      "transform")
+    # Build in project
+    build(f"{TEMPLATE_DIR}/Max MIDI Generator.amxd",
+          f"{PROJECT_M4L}/LivePilot_MIDITool_Generate.amxd",
+          "generate")
+    build(f"{TEMPLATE_DIR}/Max MIDI Transformation.amxd",
+          f"{PROJECT_M4L}/LivePilot_MIDITool_Transform.amxd",
+          "transform")
 
-# Install to User Library (correct paths)
-shutil.copy2(f"{PROJECT_M4L}/LivePilot_MIDITool_Generate.amxd",
-             f"{USER_LIB_GEN}/LivePilot_MIDITool_Generate.amxd")
-shutil.copy2(f"{PROJECT_M4L}/LivePilot_MIDITool_Transform.amxd",
-             f"{USER_LIB_TRANS}/LivePilot_MIDITool_Transform.amxd")
 
-# Also copy the JS bridge alongside each (Max needs it in the same folder)
-bridge_js = f"{PROJECT_M4L}/miditool_bridge.js"
-shutil.copy2(bridge_js, f"{USER_LIB_GEN}/miditool_bridge.js")
-shutil.copy2(bridge_js, f"{USER_LIB_TRANS}/miditool_bridge.js")
+    # Install to User Library (correct paths)
+    shutil.copy2(f"{PROJECT_M4L}/LivePilot_MIDITool_Generate.amxd",
+                 f"{USER_LIB_GEN}/LivePilot_MIDITool_Generate.amxd")
+    shutil.copy2(f"{PROJECT_M4L}/LivePilot_MIDITool_Transform.amxd",
+                 f"{USER_LIB_TRANS}/LivePilot_MIDITool_Transform.amxd")
 
-# Remove the broken ones from the wrong location
-wrong_dir = os.path.expanduser("~/Music/Ableton/User Library/Presets/MIDI Effects/Max MIDI Effect")
-for fn in ("LivePilot_MIDITool_Generate.amxd", "LivePilot_MIDITool_Transform.amxd"):
-    wrong = f"{wrong_dir}/{fn}"
-    if os.path.exists(wrong):
-        os.remove(wrong)
-        print(f"\n  Removed stale file: {wrong}")
+    # Also copy the JS bridge alongside each (Max needs it in the same folder)
+    bridge_js = f"{PROJECT_M4L}/miditool_bridge.js"
+    shutil.copy2(bridge_js, f"{USER_LIB_GEN}/miditool_bridge.js")
+    shutil.copy2(bridge_js, f"{USER_LIB_TRANS}/miditool_bridge.js")
 
-print(f"\n✓ Installed to User Library:")
-print(f"  {USER_LIB_GEN}/LivePilot_MIDITool_Generate.amxd")
-print(f"  {USER_LIB_TRANS}/LivePilot_MIDITool_Transform.amxd")
+    # Remove the broken ones from the wrong location
+    wrong_dir = os.path.expanduser("~/Music/Ableton/User Library/Presets/MIDI Effects/Max MIDI Effect")
+    for fn in ("LivePilot_MIDITool_Generate.amxd", "LivePilot_MIDITool_Transform.amxd"):
+        wrong = f"{wrong_dir}/{fn}"
+        if os.path.exists(wrong):
+            os.remove(wrong)
+            print(f"\n  Removed stale file: {wrong}")
 
-# Final verify — parse each back and confirm amxdtype
-print(f"\n=== Verification ===")
-for variant, path in [
-    ("Generator",      f"{USER_LIB_GEN}/LivePilot_MIDITool_Generate.amxd"),
-    ("Transformation", f"{USER_LIB_TRANS}/LivePilot_MIDITool_Transform.amxd"),
-]:
-    _, _, _, parsed = parse_amxd(path)
-    amxdtype = parsed["patcher"]["project"]["amxdtype"]
-    marker = amxdtype.to_bytes(4, "big")
-    expected = b"nagg" if variant == "Generator" else b"natt"
-    status = "✓" if marker == expected else "✗"
-    print(f"  {status} {variant}: amxdtype={amxdtype} = {marker!r} (expected {expected!r})")
-    print(f"      boxes: {len(parsed['patcher']['boxes'])}, lines: {len(parsed['patcher']['lines'])}")
-    print(f"      openinpresentation: {parsed['patcher']['openinpresentation']}, devicewidth: {parsed['patcher']['devicewidth']}")
+    print(f"\n✓ Installed to User Library:")
+    print(f"  {USER_LIB_GEN}/LivePilot_MIDITool_Generate.amxd")
+    print(f"  {USER_LIB_TRANS}/LivePilot_MIDITool_Transform.amxd")
+
+    # Final verify — parse each back and confirm amxdtype
+    print(f"\n=== Verification ===")
+    for variant, path in [
+        ("Generator",      f"{USER_LIB_GEN}/LivePilot_MIDITool_Generate.amxd"),
+        ("Transformation", f"{USER_LIB_TRANS}/LivePilot_MIDITool_Transform.amxd"),
+    ]:
+        _, _, _, parsed = parse_amxd(path)
+        amxdtype = parsed["patcher"]["project"]["amxdtype"]
+        marker = amxdtype.to_bytes(4, "big")
+        expected = b"nagg" if variant == "Generator" else b"natt"
+        status = "✓" if marker == expected else "✗"
+        print(f"  {status} {variant}: amxdtype={amxdtype} = {marker!r} (expected {expected!r})")
+        print(f"      boxes: {len(parsed['patcher']['boxes'])}, lines: {len(parsed['patcher']['lines'])}")
+        print(f"      openinpresentation: {parsed['patcher']['openinpresentation']}, devicewidth: {parsed['patcher']['devicewidth']}")
+
+
+if __name__ == "__main__":
+    main()

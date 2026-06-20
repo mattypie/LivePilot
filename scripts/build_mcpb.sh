@@ -72,6 +72,11 @@ find "$STAGE" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null |
 find "$STAGE" -name "*.pyc" -delete 2>/dev/null || true
 find "$STAGE" -name ".DS_Store" -delete 2>/dev/null || true
 
+# Honor .mcpbignore for the copied m4l_device tree: user-saved Ableton presets
+# (*.adv) and local re-freeze backups (*.pre-*-backup) must never ship.
+find "$STAGE/m4l_device" -name "*.adv" -delete 2>/dev/null || true
+find "$STAGE/m4l_device" -name "*.pre-*-backup" -delete 2>/dev/null || true
+
 # Ensure output dir exists
 mkdir -p "$(dirname "$OUTPUT")"
 
