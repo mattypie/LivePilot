@@ -821,6 +821,7 @@ def corpus_research_targets(
 def corpus_emit_synthesis_briefs(
     ctx: Context,
     plugin_ids: list = None,
+    inline_limit: int = 5,
 ) -> dict:
     """Phase 4 — emit sonnet-subagent briefs for plugin identity synthesis.
 
@@ -832,10 +833,18 @@ def corpus_emit_synthesis_briefs(
     ----------
     plugin_ids : list of plugin_ids to emit briefs for. If empty, emits for
                  every plugin in the inventory.
+    inline_limit : maximum number of FULL briefs returned inline (default 5,
+                 matching the 'Cap parallel subagents at ~5' instruction).
+                 Any plugins beyond this cap are returned as lightweight stubs
+                 ({plugin_id, output_path}) in `deferred` so a single call can
+                 never return a multi-MB response over a large inventory. Pass
+                 explicit `plugin_ids` (or a larger inline_limit) to get the
+                 full brief for a specific batch.
 
     Returns
     -------
-    {briefs: [{plugin_id, brief, output_path}, ...], total}
+    {briefs: [{plugin_id, brief, output_path}, ...], deferred: [{plugin_id,
+     output_path}, ...], total, inline_count, inline_limit}
     """
     inventory_path = DEFAULT_OUTPUT_ROOT / "plugins" / "_inventory.json"
     if not inventory_path.exists():
@@ -844,7 +853,9 @@ def corpus_emit_synthesis_briefs(
     all_plugins = inventory.get("plugins", [])
 
     target_ids = set(plugin_ids) if plugin_ids else None
+    cap = inline_limit if inline_limit and inline_limit > 0 else 5
     briefs = []
+    deferred = []
     for plugin_dict in all_plugins:
         pid = plugin_dict.get("plugin_id")
         if target_ids is not None and pid not in target_ids:
@@ -866,21 +877,32 @@ def corpus_emit_synthesis_briefs(
         research_root = DEFAULT_OUTPUT_ROOT / "plugins" / pid / "research"
 
         brief = build_synthesis_brief(plugin, local_manual, research_root if research_root.exists() else None)
-        briefs.append({
-            "plugin_id": pid,
-            "brief": brief,
-            "output_path": brief["output_path"],
-        })
+        if len(briefs) < cap:
+            briefs.append({
+                "plugin_id": pid,
+                "brief": brief,
+                "output_path": brief["output_path"],
+            })
+        else:
+            deferred.append({
+                "plugin_id": pid,
+                "output_path": brief["output_path"],
+            })
 
     return {
         "briefs": briefs,
-        "total": len(briefs),
+        "deferred": deferred,
+        "total": len(briefs) + len(deferred),
+        "inline_count": len(briefs),
+        "inline_limit": cap,
         "instruction": (
             "For each brief: dispatch one sonnet subagent (Agent tool with "
             "subagent_type='general-purpose', model='sonnet') passing the brief "
             "as context. The subagent reads brief['synthesis_inputs'] and writes "
             "the YAML at brief['output_path']. Cap parallel subagents at ~5 to "
-            "avoid main-context bloat."
+            "avoid main-context bloat. Plugins beyond inline_limit are listed in "
+            "'deferred' as stubs — re-call corpus_emit_synthesis_briefs with their "
+            "plugin_ids to get the full briefs for the next batch."
         ),
     }
 

@@ -796,6 +796,34 @@ def _serialize_overlay_entry(entry) -> dict:
     }
 
 
+_OVERLAY_DESCRIPTION_PREVIEW = 240
+
+
+def _serialize_overlay_entry_lite(entry) -> dict:
+    """Lightweight search-result serializer: drops the full YAML `body`.
+
+    The `body` of an overlay entry can be ~17 KB; inlining it for every one of
+    up to `limit` matches makes a single extension_atlas_search return hundreds
+    of KB. The search path only needs identity + a description preview so the
+    caller can decide which entry to fetch in full via extension_atlas_get.
+    """
+    description = entry.description or ""
+    truncated = len(description) > _OVERLAY_DESCRIPTION_PREVIEW
+    return {
+        "namespace": entry.namespace,
+        "entity_type": entry.entity_type,
+        "entity_id": entry.entity_id,
+        "name": entry.name,
+        "description": (
+            description[:_OVERLAY_DESCRIPTION_PREVIEW] + "…"
+            if truncated else description
+        ),
+        "tags": entry.tags,
+        "artists": entry.artists,
+        "requires_box": entry.requires_box,
+    }
+
+
 @mcp.tool()
 def extension_atlas_search(ctx: Context, query: str,
                            namespace: str = "",
@@ -822,7 +850,9 @@ def extension_atlas_search(ctx: Context, query: str,
         "namespace": namespace or None,
         "entity_type": entity_type or None,
         "count": len(matches),
-        "results": [_serialize_overlay_entry(e) for e in matches],
+        "results": [_serialize_overlay_entry_lite(e) for e in matches],
+        "note": "Search results omit the full YAML body; call "
+                "extension_atlas_get(namespace, entity_id) for the complete entry.",
     }
 
 
