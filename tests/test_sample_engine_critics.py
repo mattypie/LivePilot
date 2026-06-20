@@ -108,7 +108,8 @@ class TestVibeFitCritic:
 
     def test_high_energy_high_novelty_good_fit(self):
         tg = SimpleNamespace(evidence_count=10, novelty_band=0.9)
-        profile = _make_profile(brightness=0.9, transient_density=0.8)
+        # transient_density is peaks/sec; ~10/s is a busy, high-energy sample.
+        profile = _make_profile(brightness=0.9, transient_density=10.0)
         r = run_vibe_fit_critic(profile, taste_graph=tg)
         assert r.score >= 0.7
 
@@ -164,3 +165,54 @@ class TestRunAllCritics:
         assert "vibe_fit" in results
         assert "intent_fit" in results
         assert all(isinstance(v, CriticResult) for v in results.values())
+
+
+class TestVibeFitTransientNormalization:
+    """Regression: transient_density is peaks/sec (unbounded), not a 0-1 value.
+
+    Before the fix the energy proxy added raw peaks/sec to brightness and
+    clamped to 1.0, so every transient-rich sample saturated to energy=1.0 and
+    vibe_fit could not distinguish a moderately busy sample from an extremely
+    busy one. After normalization the two yield different scores.
+    """
+
+    def test_busy_samples_are_distinguishable(self):
+        tg = SimpleNamespace(evidence_count=10, novelty_band=0.4)
+        moderate = _make_profile(brightness=0.0, transient_density=6.0)
+        very_busy = _make_profile(brightness=0.0, transient_density=24.0)
+        r_mod = run_vibe_fit_critic(moderate, taste_graph=tg)
+        r_busy = run_vibe_fit_critic(very_busy, taste_graph=tg)
+        # Pre-fix both saturate to energy=0.5 -> identical scores; the fix
+        # makes them differ.
+        assert abs(r_mod.score - r_busy.score) > 0.05
+
+    def test_realistic_peaks_per_second_stays_in_range(self):
+        tg = SimpleNamespace(evidence_count=10, novelty_band=0.5)
+        # 30 peaks/sec is a plausible analyzer output for a dense break.
+        profile = _make_profile(brightness=0.5, transient_density=30.0)
+        r = run_vibe_fit_critic(profile, taste_graph=tg)
+        assert 0.0 <= r.score <= 1.0
+
+
+def test_slice_base_note_is_c1_not_c3():
+    """Regression: Simpler slice mode maps slice N to MIDI 36+N (C1).
+
+    Notes generated at C3 (60+) trigger no slice and play silent.
+    """
+    from mcp_server.sample_engine.slice_workflow import (
+        SLICE_BASE_NOTE,
+        plan_slice_steps,
+    )
+
+    assert SLICE_BASE_NOTE == 36
+
+    result = plan_slice_steps(slice_count=8, intent="rhythm", bars=4, tempo=120)
+    assert result["note_map"][0]["midi_note"] == 36
+    assert result["note_map"][7]["midi_note"] == 43
+
+    notes_step = [s for s in result["steps"] if s["tool"] == "add_notes"][0]
+    pitches = [n["pitch"] for n in notes_step["params"]["notes"]]
+    # Every emitted pitch must fall in the C1-based slice range (36..36+count-1),
+    # never in the silent C3+ region.
+    assert pitches, "expected generated notes"
+    assert all(36 <= p <= 43 for p in pitches)
