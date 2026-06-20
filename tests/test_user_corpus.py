@@ -303,3 +303,72 @@ def test_sidecar_carries_provenance_metadata(tmp_path):
         assert key in sidecar, f"missing provenance key: {key}"
     assert sidecar["source_id"] == "t"
     assert sidecar["scanner"] == "test-txt4"
+def test_iter_files_excludes_named_directory(tmp_path):
+    """exclude_globs like ['*Backup*'] must exclude files INSIDE a Backup/ dir.
+
+    Regression for the runner bug where ``Path.match`` (right-anchored to the
+    filename) silently failed to exclude files nested under a named directory.
+    """
+    from mcp_server.user_corpus.runner import _iter_files
+    from mcp_server.user_corpus.scanner import Scanner
+
+    class _StubScanner(Scanner):
+        type_id = "stub-als"
+        file_extensions = [".als"]
+        output_subdir = "stub"
+
+        def scan_one(self, path):
+            return {}
+
+        def derive_tags(self, sidecar):
+            return []
+
+        def derive_description(self, sidecar):
+            return ""
+
+    # Lay out: one live project + one inside a Backup/ folder.
+    (tmp_path / "live.als").write_text("x", encoding="utf-8")
+    backup_dir = tmp_path / "Backup"
+    backup_dir.mkdir()
+    (backup_dir / "old.als").write_text("x", encoding="utf-8")
+
+    scanner = _StubScanner()
+    found = {p.name for p in _iter_files(
+        tmp_path, scanner, recursive=True, excludes=["*Backup*"],
+    )}
+
+    assert "live.als" in found
+    assert "old.als" not in found, (
+        "file inside Backup/ should be excluded by '*Backup*'"
+    )
+
+
+def test_iter_files_filename_glob_still_works(tmp_path):
+    """Filename-only globs (e.g. '*.tmp' exclusion) must keep working."""
+    from mcp_server.user_corpus.runner import _iter_files
+    from mcp_server.user_corpus.scanner import Scanner
+
+    class _StubScanner2(Scanner):
+        type_id = "stub-als2"
+        file_extensions = [".als", ".tmp"]
+        output_subdir = "stub2"
+
+        def scan_one(self, path):
+            return {}
+
+        def derive_tags(self, sidecar):
+            return []
+
+        def derive_description(self, sidecar):
+            return ""
+
+    (tmp_path / "keep.als").write_text("x", encoding="utf-8")
+    (tmp_path / "scratch.tmp").write_text("x", encoding="utf-8")
+
+    scanner = _StubScanner2()
+    found = {p.name for p in _iter_files(
+        tmp_path, scanner, recursive=False, excludes=["*.tmp"],
+    )}
+
+    assert "keep.als" in found
+    assert "scratch.tmp" not in found
