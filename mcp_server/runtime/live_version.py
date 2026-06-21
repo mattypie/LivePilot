@@ -46,10 +46,13 @@ class LiveVersionCapabilities:
     def from_session_info(cls, session_info: dict) -> LiveVersionCapabilities:
         """Extract version from get_session_info response.
 
-        Looks for 'live_version' field. Falls back to 12.0.0 if absent
-        (pre-upgrade Remote Script).
+        Looks for 'live_version' field. Falls back to 12.0.0 if absent,
+        null, or empty (pre-upgrade Remote Script). Uses a falsy-guard
+        rather than a key-presence default so a present-but-empty value
+        degrades to the conservative floor, aligning with the sibling
+        readers in runtime/tools.py and runtime/capability_probe.py.
         """
-        version_str = session_info.get("live_version", "12.0.0")
+        version_str = session_info.get("live_version") or "12.0.0"
         return cls.from_version_string(version_str)
 
     @property
