@@ -38,6 +38,20 @@
 
 ---
 
+## What's New in v1.27.1
+
+A maintenance release that fixes 35 issues from a deep audit and restores tools that had silently broken:
+
+- **Restored tools** — `augment_with_samples`, `get_composition_plan`, `propose_composer_branches`, `check_clip_key_consistency`, and `compare_phrase_renders` were crashing or returning empty results; they now work.
+- **Recursive plugin scanning (#44)** — the User Corpus scanner now finds plugins nested in vendor subfolders (e.g. `VST3/<Vendor>/Plugin.vst3`) instead of only the top level.
+- **Truer analysis** — reference-gap, hook-salience, dynamics, drop-detection, harmony-slot, and grader fixes that previously produced fabricated or empty results.
+- **Safer & faster** — Splice credit-gating fixed, blocking sample I/O moved off the event loop, unbounded tool responses capped, and the M4L bridge no longer loses responses on UDP reordering.
+- **v1.27.0** added two read-only Live 12.4 capability-probe tools (`probe_link_audio`, `probe_stem_workflow`).
+
+Full details in the [CHANGELOG](CHANGELOG.md).
+
+---
+
 ## What LivePilot Does
 
 Most MCP servers are tool collections — they execute commands. LivePilot is an **agentic production system**. It has eight layers that work together:
@@ -473,7 +487,7 @@ Full track with song form: intro, verse, hook, breakdown, outro. Uses a two-phas
 - Native arrangement clips via `create_native_arrangement_clip` (one clip per section, looped to fill section length)
 - Zombie-track cleanup in postflight (removes tracks with no clips and no instrument device)
 - Drum-role pitch repair ported from fast mode
-- **Known gap (v1.25):** `KnowledgePack.atlas_candidates_per_role` is an empty stub — the agent currently falls through to `search_browser` filename matching instead of consulting the indexed atlas. This is BUG-FULL-MODE-24 and is the headline feature of v1.25.
+- **Atlas anchors:** role-level device knowledge is supplied through `KnowledgePack.atlas_anchors`, which consults the indexed atlas rather than filename matching. The older `atlas_candidates_per_role` field is a deprecated legacy stub, kept empty for back-compat.
 - Invoke with: *"Write a full [genre] track at [tempo] BPM"* or *"Build a full arrangement"*
 
 #### develop mode — `develop_apply`
@@ -492,7 +506,7 @@ All three modes share a `KnowledgePack` that provides structured creative contex
 - `event_lexicon` — 42 structural events across 7 categories (drum density, harmonic, texture, vocal, rhythm feel, tension, fx gesture)
 - `genre_context` — parses the 15-genre `genre-vocabularies.md` at load time
 - `artist_context` — parses the ~25-producer `artist-vocabularies.md` at load time
-- `atlas_candidates_per_role` — **stubbed in v1.25.0**, will be populated in v1.25
+- `atlas_anchors` — indexed-atlas device anchors per role (replaced the legacy `atlas_candidates_per_role` stub)
 
 #### Core composer tools
 
@@ -550,7 +564,7 @@ The V2 intelligence layer. These tools analyze, diagnose, plan, evaluate, and le
 
 ### Easiest: Claude Desktop Extension (1 click)
 
-Download [`livepilot.mcpb`](https://github.com/dreamrec/LivePilot/releases/latest) and double-click it.
+Download the latest `livepilot-<version>.mcpb` from the [Releases page](https://github.com/dreamrec/LivePilot/releases/latest) and double-click it.
 Claude Desktop installs everything automatically. Then:
 
 1. Open Ableton Live 12
@@ -584,10 +598,14 @@ Restart Ableton → Preferences → Link, Tempo & MIDI → Control Surface → *
 <details>
 <summary><strong>2. MCP Client</strong></summary>
 
-**Claude Code:**
+**Claude Code** — pick one (installing both registers the MCP server twice and collides on port 9878):
 ```bash
+# MCP server only:
 claude mcp add LivePilot -- npx livepilot
-claude plugin add github:dreamrec/LivePilot/plugin
+
+# Or the full plugin (MCP server + skills + slash commands):
+claude plugin marketplace add github:dreamrec/LivePilot
+claude plugin install livepilot@dreamrec-LivePilot
 ```
 
 **Codex App:**
@@ -680,7 +698,8 @@ npx livepilot --install-codex-plugin
 **Claude Code**
 
 ```bash
-claude plugin add github:dreamrec/LivePilot/plugin
+claude plugin marketplace add github:dreamrec/LivePilot
+claude plugin install livepilot@dreamrec-LivePilot
 ```
 
 | Command | What |
