@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.27.1 — 2026-06-21
+
+Maintenance release: 35 verified fixes from a deep multi-agent audit, recursive installed-plugin scanning, and Windows-CI hardening. No change to the tool surface (467 tools / 56 domains).
+
+### Restored — tools that were silently broken
+- `augment_with_samples`, `get_composition_plan`, `propose_composer_branches` — crashed or returned nothing since the v1.24 refactor removed section templates; they now degrade to a single full-length section.
+- `check_clip_key_consistency` — always returned `"unknown"` (removed FastMCP `.fn` accessor).
+- `compare_phrase_renders` — returned an identical empty critique; now analyzes each render.
+
+### Fixed — correctness
+- Reference engine: project spectrum and stereo width are now populated (gap analysis previously ran against an all-zero project).
+- `infer_section_purposes`: drops are no longer mislabeled as tension.
+- Grader: master/return/group tracks identified by their real field names (group containers were inflating track counts).
+- Hook salience: the memorability boost no longer fires on every candidate.
+- Mix: the `flat_dynamics` critic is now reachable (`over_compressed` is a 3–6 dB band).
+- Wavetable adapter uses the real `Osc 1 Pos` parameter name.
+- Simpler slice playback uses the correct base note (36+N); `vibe_fit` energy proxy normalized.
+- Harmony and phrase-grid analysis read from the correct clip slot.
+- `exclude_globs` now match files inside named directories.
+- A single shared technique store so in-session saves are visible to recall/search.
+- Read-only prefix matcher no longer misclassifies mutating tools as safe.
+- Atlas id/name collisions no longer shadow entries; the overlay index is no longer rescanned per namespace.
+- AMXD device-type map recognizes MIDI Tool devices (Live 12.1+).
+- `apply_full_plan_v2` postflight no longer deletes a reused existing track.
+- Fatigue level no longer diluted by low-severity issues; energy-arc no longer desyncs on skipped scenes; `create_preview_set` no longer silently overwrites an existing set.
+
+### Fixed — installed-plugin scanning (#44)
+- The plugin scanner now recurses into vendor subfolders (e.g. `VST3/<Vendor>/Plugin.vst3`); nested plugins are found and vendor folders are no longer emitted as junk inventory records.
+
+### Fixed — safety and resources
+- Splice `is_free` misclassification that could bypass credit/quota gating.
+- Experiment rollback undoes only `remote_command` steps (no longer reverts unrelated edits).
+- Timed-out write commands are dropped instead of re-executing later on the main thread.
+- Order-tolerant M4L bridge chunk reassembly (no permanent response loss on UDP reordering).
+- Installer install-path guard hardened; Splice bearer token gated to splice.com HTTPS hosts; non-numeric Live version strings tolerated instead of crashing the capability probe.
+
+### Performance
+- Blocking sample I/O (SQLite, file decode, FFT, network) moved off the asyncio event loop.
+- Capped previously-unbounded tool responses (`atlas_device_info`, `extension_atlas_search`, corpus synthesis briefs, piano-roll matrix, plugin `sdk_metadata`).
+- Deduped redundant session round-trips (`enter_wonder_mode`, `build_project_brain`).
+
+### CI and tooling
+- Fixed the Windows CI matrix (cp1252 `UnicodeEncodeError` in verifier scripts; POSIX-path test fixture).
+- `build_mcpb.sh` enforces `.mcpbignore`; portable dev scripts.
+
+### Dependencies
+- fastmcp, soundfile 0.14.0, grpcio 1.81.1, protobuf 7.35.1.
+
 ## v1.27.0 — 2026-06-16
 
 Probe-first Live 12.4 capability release.
