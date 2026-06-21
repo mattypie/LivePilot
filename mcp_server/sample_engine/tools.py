@@ -6,6 +6,7 @@ direct Splice online catalog hunt/download via the gRPC client.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -57,7 +58,11 @@ async def analyze_sample(
         return {"error": "Could not determine file path — provide file_path directly"}
 
     source = "session_clip" if track_index is not None else "filesystem"
-    profile = build_profile_from_filename(file_path, source=source)
+    # Offload audio decode + numpy FFT off the event loop (heavy CPU/IO).
+    loop = asyncio.get_running_loop()
+    profile = await loop.run_in_executor(
+        None, build_profile_from_filename, file_path, source
+    )
     return profile.to_dict()
 
 
@@ -316,12 +321,16 @@ async def search_samples(
         if not used_grpc:
             splice = SpliceSource()
             if splice.enabled:
-                splice_results = splice.search(
-                    query=query,
-                    max_results=max_results,
-                    key=key,
-                    bpm_min=bpm_min,
-                    bpm_max=bpm_max,
+                # Offload blocking SQLite query off the event loop.
+                splice_results = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: splice.search(
+                        query=query,
+                        max_results=max_results,
+                        key=key,
+                        bpm_min=bpm_min,
+                        bpm_max=bpm_max,
+                    ),
                 )
                 for candidate in splice_results:
                     d = candidate.to_dict()
@@ -335,12 +344,16 @@ async def search_samples(
             browser = BrowserSource()
             for category in browser.DEFAULT_CATEGORIES:
                 try:
-                    search_result = ableton.send_command("search_browser", {
-                        "path": category,
-                        "name_filter": query,
-                        "loadable_only": True,
-                        "max_results": max_results,
-                    })
+                    # Offload blocking TCP round-trip off the event loop.
+                    search_result = await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        lambda: ableton.send_command("search_browser", {
+                            "path": category,
+                            "name_filter": query,
+                            "loadable_only": True,
+                            "max_results": max_results,
+                        }),
+                    )
                     raw = search_result.get("results", [])
                     parsed = browser.parse_results(raw, category)
                     for candidate in parsed:
@@ -359,7 +372,10 @@ async def search_samples(
             "~/Music", "~/Documents/Samples",
             "~/Documents/LivePilot/downloads",
         ])
-        fs_results = fs.search(query, max_results=max_results)
+        # Offload blocking recursive filesystem scan off the event loop.
+        fs_results = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: fs.search(query, max_results=max_results)
+        )
         for candidate in fs_results:
             d = candidate.to_dict()
             d["source_priority"] = 3

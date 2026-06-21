@@ -6,6 +6,7 @@ responses and exposes feature flags for tool routing.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -19,11 +20,26 @@ class LiveVersionCapabilities:
 
     @classmethod
     def from_version_string(cls, version_str: str) -> LiveVersionCapabilities:
-        """Parse '12.3.6' into a capabilities instance."""
-        parts = version_str.split(".")
-        major = int(parts[0]) if len(parts) > 0 else 12
-        minor = int(parts[1]) if len(parts) > 1 else 0
-        patch = int(parts[2]) if len(parts) > 2 else 0
+        """Parse '12.3.6' into a capabilities instance.
+
+        Tolerant of malformed input: extracts the leading integer of each
+        dotted component and falls back to the conservative floor
+        (major=12, minor=0, patch=0) for missing or non-numeric components.
+        Mirrors the Remote Script's degrade-to-(12,0,0) contract
+        (remote_script/LivePilot/version_detect.py) so a junk live_version
+        string never crashes get_capability_state / get_session_kernel /
+        --doctor.
+        """
+        def _component(parts: list[str], index: int, default: int) -> int:
+            if index >= len(parts):
+                return default
+            match = re.match(r"\s*(\d+)", parts[index])
+            return int(match.group(1)) if match else default
+
+        parts = (version_str or "").split(".")
+        major = _component(parts, 0, 12)
+        minor = _component(parts, 1, 0)
+        patch = _component(parts, 2, 0)
         return cls(major=major, minor=minor, patch=patch)
 
     @classmethod
