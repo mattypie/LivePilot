@@ -2,7 +2,7 @@
 
 LivePilot gives you 467 tools that control every part of Ableton Live 12. You don't call these tools directly -- you describe what you want in plain language, and the AI picks the right tools behind the scenes. But knowing what's available helps you ask better questions and understand what's happening when the AI works on your session.
 
-This chapter covers every tool, grouped by what it does. Each entry tells you the tool name, what it does in practice, what parameters it accepts, and when you'd want it.
+This chapter covers the most-used tools, grouped by what it does. Each entry tells you the tool name, what it does in practice, what parameters it accepts, and when you'd want it. The complete list of all 467 tools is auto-generated in the **[Tool Catalog](tool-catalog.md)**.
 
 > **Quick reference for common values:**
 >
@@ -1854,7 +1854,7 @@ Removes a technique from the library. Creates a backup file first for safety.
 
 ## Analyzer
 
-These 29 tools require the LivePilot Analyzer Max for Live device on the master track. They provide real-time DSP analysis, FluCoMa spectral descriptors, audio capture, deep device introspection, sample manipulation, and warp marker control. All other 207 tools work without the device.
+The Analyzer domain (38 tools) requires the LivePilot Analyzer Max for Live device on the master track. They provide real-time DSP analysis, FluCoMa spectral descriptors, audio capture, deep device introspection, sample manipulation, and warp marker control. Every other tool works without the device.
 
 ### get_master_spectrum
 

@@ -497,13 +497,26 @@ Cue points make it easy to navigate a long arrangement. Name your sections, mark
 
 ### Switching to arrangement playback
 
-If you've been playing session clips, Ableton stays in "session override" mode even when you switch to Arrangement View. The arrangement won't play unless you explicitly tell it to:
+If you've been playing session clips, Ableton stays in "session override" mode even when you switch to Arrangement View. Just calling `back_to_arranger()` isn't enough — if any session clips are still playing or triggered, the override re-asserts and playback starts mid-song or doesn't follow the timeline at all. Finalize the build in this order:
 
 ```
-back_to_arranger()
+stop_all_clips()                                   // 1. clear any playing/triggered session clips first
+back_to_arranger()                                 // 2. release session override (un-light the orange "Back to Arrangement" button)
+set_clip_loop(loop=true, loop_start=0, loop_length=<content end>)  // 3. loop the whole arrangement
+jump_to_time(beat_time=0.0)                         // 4. cursor to beat 0
 ```
 
-This is the equivalent of clicking the "Back to Arrangement" button in Ableton. After calling this, playback follows the arrangement timeline instead of session clips.
+`back_to_arranger()` is the equivalent of clicking the "Back to Arrangement" button in Ableton — once it's done and the button is unlit, playback follows the arrangement timeline instead of session clips.
+
+Use the actual beat where your last clip ends for `loop_length`, NOT Live's padded `song_length` (which includes trailing silence).
+
+One-call equivalent — `force_arrangement` handles all four finalization steps atomically:
+
+```
+force_arrangement(beat_time=0, loop_start=0, loop_length=<content end>, play=false)
+```
+
+Prefer `force_arrangement(...)` when you just want a clean "ready to hit Play from bar 1" state.
 
 ### Recording into arrangement
 

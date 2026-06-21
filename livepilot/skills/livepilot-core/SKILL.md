@@ -198,14 +198,14 @@ Use when the user wants options, variants, or is stuck ("surprise me", "try some
 **Rule of thumb**: if the user asked for a specific fix, Flow A. If they asked "what would you do?" or mentioned feel/vibe without parameters, Flow B.
 
 ### Semantic Moves
-High-level musical intents that compile to deterministic tool sequences. 7 families (44 moves as of v1.27.0):
-- **mix** — `tighten_low_end`, `widen_stereo`, `make_punchier`, `darken_without_losing_width`, `reduce_repetition_fatigue`, `make_kick_bass_lock`, `reduce_foreground_competition`
-- **arrangement** — `refresh_repeated_section`, plus structural moves defined alongside mix
-- **transition** — `create_buildup_tension`, `smooth_scene_handoff`, `increase_contrast_before_payoff`, `bridge_sections`, `increase_forward_motion`, `open_chorus`, `create_breakdown`
-- **sound_design** — `add_warmth`, `add_texture`, `shape_transients`, `add_space`
-- **performance** — `recover_energy`, `decompress_tension`, `safe_spotlight`, `emergency_simplify`
-- **device_creation** — `create_chaos_modulator`, `create_feedback_resonator`, `create_wavefolder_effect`, `create_bitcrusher_effect`, `create_karplus_string`, `create_stochastic_texture`, `create_fdn_reverb` (procedural M4L device generation)
-- **sample** — `sample_chop_rhythm`, `sample_texture_layer`, `sample_vocal_ghost`, `sample_break_layer`, `sample_resample_destroy`, `sample_one_shot_accent` (registered from `sample_engine/moves.py`)
+High-level musical intents that compile to deterministic tool sequences. 7 families (44 moves as of v1.27.1):
+- **mix** (9) — `tighten_low_end`, `widen_stereo`, `make_punchier`, `darken_without_losing_width`, `reduce_repetition_fatigue`, `make_kick_bass_lock`, `set_track_routing`, `set_track_metadata`, `configure_send_architecture`
+- **device_creation** (9) — `create_chaos_modulator`, `create_feedback_resonator`, `create_wavefolder_effect`, `create_bitcrusher_effect`, `create_karplus_string`, `create_stochastic_texture`, `create_fdn_reverb`, `create_drum_rack_pad`, `build_send_chain` (procedural M4L device generation)
+- **sound_design** (7) — `add_warmth`, `add_texture`, `shape_transients`, `add_space`, `configure_device`, `remove_device`, `load_chord_source`
+- **sample** (6) — `sample_chop_rhythm`, `sample_texture_layer`, `sample_vocal_ghost`, `sample_break_layer`, `sample_resample_destroy`, `sample_one_shot_accent` (registered from `sample_engine/moves.py`)
+- **performance** (5) — `recover_energy`, `decompress_tension`, `safe_spotlight`, `emergency_simplify`, `configure_record_readiness`
+- **arrangement** (4) — `create_buildup_tension`, `smooth_scene_handoff`, `configure_groove`, `set_scene_metadata`
+- **transition** (4) — `bridge_sections`, `increase_forward_motion`, `open_chorus`, `create_breakdown`
 
 Use `list_semantic_moves(domain="mix")` to discover available moves.
 

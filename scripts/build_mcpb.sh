@@ -19,8 +19,9 @@
 # The bundle is deliberately lean:
 #   - bin/livepilot.js is pure Node stdlib (zero npm deps) so no
 #     node_modules is shipped
-#   - Python deps are bootstrapped into ~/.livepilot/.venv on first launch
-#     from the bundled requirements.txt (the same path npm-install users take)
+#   - Python deps are bootstrapped into a `.venv` directory alongside the
+#     bundle (ROOT/.venv) on first launch from the bundled requirements.txt
+#     (the same path npm-install users take)
 #   - LivePilot_Analyzer.amxd + Remote Script are shipped so the MCPB
 #     install can auto-install them via the user_config.auto_install_remote_script
 #     switch in manifest.json
