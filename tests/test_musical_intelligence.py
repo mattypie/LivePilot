@@ -298,3 +298,30 @@ def test_compare_phrase_renders_distinguishes_files(monkeypatch):
     )
     # And the file with the clearer arc should outrank the flat one.
     assert overalls["arc.wav"] > overalls["flat.wav"]
+def test_fatigue_level_not_diluted_by_low_severity_issues():
+    """A single serious issue must not be diluted when extra minor issues
+    are added — fatigue aggregation is a saturating combine, not a mean.
+
+    One motif at fatigue_risk 0.9 plus four at 0.61 each emits a
+    `motif_overuse` issue (via the `fatigue_risk > 0.6` branch). The mean of
+    [0.9, 0.61, 0.61, 0.61, 0.61] is ~0.668, so the old mean-based aggregation
+    would report LESS fatigue than the single 0.9 issue warrants. With a
+    saturating combine, more issues can only increase fatigue.
+    """
+    scenes = [{"name": "A", "clips": []}]
+    motif_graph = {
+        "motifs": [
+            {"motif_id": "serious", "fatigue_risk": 0.9},
+            {"motif_id": "minor_1", "fatigue_risk": 0.61},
+            {"motif_id": "minor_2", "fatigue_risk": 0.61},
+            {"motif_id": "minor_3", "fatigue_risk": 0.61},
+            {"motif_id": "minor_4", "fatigue_risk": 0.61},
+        ]
+    }
+    report = detect_repetition_fatigue(scenes, motif_graph)
+    # Exactly the five motif_overuse issues, no others, for this input.
+    assert len(report.issues) == 5
+    assert all(i["type"] == "motif_overuse" for i in report.issues)
+    # Saturating combine must keep fatigue at least as high as the worst issue
+    # (0.9), not the diluted mean (~0.668).
+    assert report.fatigue_level >= 0.9 - 1e-6

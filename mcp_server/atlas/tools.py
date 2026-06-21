@@ -109,11 +109,14 @@ def atlas_search(ctx: Context, query: str, category: str = "all", limit: int = 1
     try:
         from .overlays import get_overlay_index
         idx = get_overlay_index()
-        # Search all non-`packs` namespaces; `packs` is already in the bundled atlas
-        for ns in idx.list_namespaces():
-            if ns == "packs":
-                continue
-            overlay_results.extend(idx.search(query, namespace=ns, limit=limit))
+        # Single pass over the overlay index (namespace=None scans all
+        # namespaces at once), then drop `packs` client-side — `packs` is
+        # already covered by the bundled atlas. Avoids re-scanning the whole
+        # index once per namespace.
+        overlay_results = [
+            e for e in idx.search(query, namespace=None, limit=limit * 2)
+            if e.namespace != "packs"
+        ]
     except Exception:  # noqa: BLE001 — never fail atlas_search over an overlay glitch
         pass
 
@@ -177,10 +180,13 @@ def atlas_search(ctx: Context, query: str, category: str = "all", limit: int = 1
 
 
 @mcp.tool()
-def atlas_device_info(ctx: Context, device_id: str) -> dict:
+def atlas_device_info(ctx: Context, device_id: str, verbose: bool = True) -> dict:
     """Get complete atlas knowledge about a device — parameters, recipes, pairings, gotchas.
 
     device_id: the atlas ID or device name (e.g., "drift", "Compressor", "808_core_kit")
+    verbose:   when True (default) return the full raw atlas record. Set False for a
+               compact summary (capped description, tag/technique counts) — useful
+               when you only need to identify the device, not read every recipe.
     """
     atlas = _get_atlas()
     if atlas is None:
@@ -189,7 +195,29 @@ def atlas_device_info(ctx: Context, device_id: str) -> dict:
     entry = atlas.lookup(device_id)
     if entry is None:
         return {"error": f"Device '{device_id}' not found in atlas", "suggestion": "Use atlas_search to find devices"}
-    return entry
+    if verbose:
+        return entry
+    # Compact mode: the common case doesn't need the full multi-KB record.
+    # Truncate the longest free-text fields the way atlas_search already caps
+    # sonic_description, and report counts for list-heavy fields so the caller
+    # knows to re-request verbose for the full detail.
+    summary: dict = {
+        "id": entry.get("id", ""),
+        "name": entry.get("name", ""),
+        "uri": entry.get("uri", ""),
+        "category": entry.get("category", ""),
+        "enriched": bool(entry.get("enriched", False)),
+        "sonic_description": (
+            entry.get("sonic_description") or entry.get("description", "")
+        )[:_ATLAS_SEARCH_DESCRIPTION_CHAR_CAP],
+        "character_tags": (
+            entry.get("character_tags") or entry.get("tags", [])
+        )[:8],
+        "sweet_spot": str(entry.get("sweet_spot", ""))[:_ATLAS_SEARCH_DESCRIPTION_CHAR_CAP],
+    }
+    summary.update(_surface_enriched_fields(entry))
+    summary["verbose_available"] = True
+    return summary
 
 
 @mcp.tool()
@@ -258,20 +286,20 @@ def atlas_chain_suggest(ctx: Context, role: str, genre: str = "") -> dict:
             query_parts.append(genre)
         query = " ".join(query_parts)
 
-        for ns in idx.list_namespaces():
-            if ns == "packs":
-                continue
-            hits = idx.search(query, namespace=ns, limit=5)
-            for entry in hits:
-                overlay_suggestions.append({
+        hits = [
+            e for e in idx.search(query, namespace=None, limit=10)
+            if e.namespace != "packs"
+        ]
+        for entry in hits:
+            overlay_suggestions.append({
                     "namespace": entry.namespace,
                     "entity_id": entry.entity_id,
                     "name": entry.name,
                     "description": (entry.description or "")[:120],
                     "tags": list(entry.tags)[:5],
-                    "source": f"user_overlay:{entry.namespace}",
-                    "note": "Load via search_browser or extension_atlas_get; no Live URI.",
-                })
+                "source": f"user_overlay:{entry.namespace}",
+                "note": "Load via search_browser or extension_atlas_get; no Live URI.",
+            })
     except Exception:  # noqa: BLE001 — never fail chain_suggest over an overlay glitch
         pass
 
@@ -662,14 +690,17 @@ def scan_full_library(
     if not force and os.path.exists(atlas_path):
         age = time.time() - os.path.getmtime(atlas_path)
         if age < 86400:
-            # Reload if not already loaded
-            import mcp_server.atlas as atlas_mod
-            if atlas_mod._atlas_instance is None:
-                atlas_mod._atlas_instance = AtlasManager(atlas_path)
+            # Use the public, thread-safe loader rather than poking the
+            # legacy `_atlas_instance` cell directly: get_atlas() loads
+            # lazily via the Singleton holder and is the only path the rest
+            # of the module actually reads back from. The old direct
+            # AtlasManager(atlas_path) construction wrote a cell get_atlas()
+            # never consults.
+            from . import get_atlas
             return {
                 "status": "already_exists",
                 "age_hours": round(age / 3600, 1),
-                "device_count": atlas_mod._atlas_instance.device_count,
+                "device_count": get_atlas().device_count,
                 "message": "Atlas is recent. Use force=True to rescan.",
             }
 

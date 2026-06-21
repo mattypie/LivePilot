@@ -50,6 +50,20 @@ from .plugin_engine.research import (
 )
 
 
+# ─── Inline plugin serialization helper ────────────────────────────────────────
+# corpus_detect_plugins persists the FULL plugin dict (incl. raw sdk_metadata =
+# entire moduleinfo.json / Info.plist) to _inventory.json. The inline MCP
+# response, however, only needs lightweight identity fields — returning the full
+# sdk_metadata for every plugin bloats the payload and duplicates the file.
+# Callers that need the raw metadata read it back from _inventory.json.
+
+
+def _slim_plugin(plugin_dict: dict) -> dict:
+    """Return a copy of a serialized DetectedPlugin without the heavy
+    ``sdk_metadata`` blob, for inline (non-persisted) MCP responses."""
+    return {k: v for k, v in plugin_dict.items() if k != "sdk_metadata"}
+
+
 # ─── Vendor canonicalization helpers (used by corpus_canonicalize_plugins) ───
 # Strips common vendor-suffix words ("DSP", "LLC", "GmbH", etc.) so different
 # spellings of the same vendor ("Valhalla DSP, LLC" + "Valhalladsp") collapse
@@ -390,7 +404,7 @@ def corpus_detect_plugins(
         )
 
     return {
-        "plugins": plugins_serialized,
+        "plugins": [_slim_plugin(p) for p in plugins_serialized],
         "totals": {"all": len(detected), "by_format": by_format},
         "inventory_path": str(inventory_path) if inventory_path else None,
         "search_paths": [str(p) for p, _ in default_plugin_dir()],
