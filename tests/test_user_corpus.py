@@ -372,3 +372,25 @@ def test_iter_files_filename_glob_still_works(tmp_path):
 
     assert "keep.als" in found
     assert "scratch.tmp" not in found
+def test_amxd_device_type_recognizes_midi_tools():
+    """MIDI Tool devices (Live 12.1+) carry a 4-byte 'nagg'/'natt' tag at offset 8.
+
+    Regression for the single-byte device_type map that tagged both as
+    'unknown-110' and could not distinguish generator from transformation.
+    """
+    from mcp_server.user_corpus.scanners.amxd import _parse_amxd
+
+    def header(tag: bytes) -> bytes:
+        assert len(tag) == 4
+        return b"ampf" + b"\x04\x00\x00\x00" + tag + b"meta" + b"\x00" * 16
+
+    gen = _parse_amxd(header(b"nagg"), "Gen.amxd")
+    trans = _parse_amxd(header(b"natt"), "Trans.amxd")
+    assert gen["device_type"] == "midi_tool_generator"
+    assert trans["device_type"] == "midi_tool_transformation"
+
+    assert _parse_amxd(header(b"aaaa"), "A.amxd")["device_type"] == "audio"
+    assert _parse_amxd(header(b"iiii"), "I.amxd")["device_type"] == "instrument"
+    assert _parse_amxd(header(b"mmmm"), "M.amxd")["device_type"] == "midi"
+
+    assert _parse_amxd(header(b"zzzz"), "Z.amxd")["device_type"] == "unknown-122"
