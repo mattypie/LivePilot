@@ -359,3 +359,28 @@ def test_discover_manuals_finds_pdf_in_bundle(tmp_path):
     top = cands[0]
     assert top.path == str(manual)
     assert top.location_score == 5  # inside bundle is highest
+def test_slim_plugin_drops_sdk_metadata_but_keeps_identity():
+    """corpus_detect_plugins' inline response must NOT carry the heavy raw
+    sdk_metadata (moduleinfo.json / Info.plist) for every plugin — that lives
+    in the persisted _inventory.json. _slim_plugin strips it while preserving
+    the lightweight identity fields."""
+    from mcp_server.user_corpus.tools import _slim_plugin
+
+    p = DetectedPlugin(
+        plugin_id="u-he-diva", name="Diva", vendor="u-he",
+        format="VST3", version="1.4.5", bundle_path="/tmp/Diva.vst3",
+        unique_id="ABCDEF01", file_size_kb=42,
+        sdk_metadata={"Name": "Diva", "Classes": [{"CID": "X"}], "blob": "y" * 5000},
+    )
+    full = p.to_dict()
+    # Sanity: the full serialization DOES carry the heavy metadata.
+    assert full["sdk_metadata"]["blob"]
+
+    slim = _slim_plugin(full)
+    # Heavy field dropped from inline payload.
+    assert "sdk_metadata" not in slim
+    # Identity fields preserved.
+    for field in ("plugin_id", "name", "vendor", "format", "version"):
+        assert slim[field] == full[field]
+    # Original full dict is untouched (helper returns a copy).
+    assert "sdk_metadata" in full
