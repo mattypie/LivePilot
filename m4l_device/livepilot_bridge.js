@@ -34,7 +34,7 @@ outlets = 2; // 0: to udpsend (responses), 1: to buffer~/status
 // Single source of truth for the bridge version — bumped alongside the
 // rest of the release manifest. Surfaced in the UI via messnamed("livepilot_version", ...)
 // so the frozen .amxd visibly reports which build it was last exported from.
-var VERSION = "1.27.1";
+var VERSION = "1.27.2";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ var pitch_history = []; // Rolling buffer for key detection
 var MAX_PITCH_HISTORY = 128;
 var detected_key = "";
 var detected_scale = "";
+var current_response_request_id = "";
 
 // Capture state
 var capture_active = false;
@@ -85,9 +86,19 @@ function anything() {
     var cmd = messagename;
     if (cmd.charAt(0) === "/") cmd = cmd.substring(1);
     var args = _decode_arg_strings(arrayfromargs(arguments));
+    var request_id = "";
+    if (args.length > 0 && typeof args[args.length - 1] === "string") {
+        var last_arg = args[args.length - 1];
+        var request_prefix = "__livepilot_request_id:";
+        if (last_arg.indexOf(request_prefix) === 0) {
+            request_id = last_arg.substring(request_prefix.length);
+            args.pop();
+        }
+    }
 
     // Defer to low-priority thread for LiveAPI safety
     var task = new Task(function() {
+        current_response_request_id = request_id;
         try {
             dispatch(cmd, args);
         } catch(e) {
@@ -223,6 +234,11 @@ function cmd_get_params(args) {
 
     var batch_size = 8;
     var current = 0;
+    // Capture the request id now: read_batch reschedules itself via
+    // Task.schedule(20), and an interleaved command arriving in that gap can
+    // overwrite the module-level current_response_request_id before the final
+    // send_response fires. The closure keeps OUR id stable across batches.
+    var captured_request_id = current_response_request_id;
 
     function read_batch() {
         try {
@@ -246,7 +262,7 @@ function cmd_get_params(args) {
                 var next_task = new Task(read_batch);
                 next_task.schedule(20);
             } else {
-                send_response({"track": track_idx, "device": device_idx, "params": params});
+                send_response({"track": track_idx, "device": device_idx, "params": params}, captured_request_id);
             }
         } catch (e) {
             send_response({
@@ -254,7 +270,7 @@ function cmd_get_params(args) {
                 "track": track_idx,
                 "device": device_idx,
                 "partial_params": params
-            });
+            }, captured_request_id);
         }
     }
 
@@ -275,6 +291,9 @@ function cmd_get_hidden_params(args) {
     var params = [];
     var current = 0;
     var batch_size = 8;
+    // See cmd_get_params: capture the request id so the closure survives the
+    // Task.schedule(20) gaps without being clobbered by an interleaved command.
+    var captured_request_id = current_response_request_id;
 
     function read_batch() {
         try {
@@ -307,7 +326,7 @@ function cmd_get_hidden_params(args) {
                     "device_name": device_name,
                     "total_params": param_count,
                     "params": params
-                });
+                }, captured_request_id);
             }
         } catch (e) {
             send_response({
@@ -316,7 +335,7 @@ function cmd_get_hidden_params(args) {
                 "device": device_idx,
                 "device_name": device_name,
                 "partial_params": params
-            });
+            }, captured_request_id);
         }
     }
 
@@ -334,6 +353,9 @@ function cmd_get_auto_state(args) {
     var results = [];
     var current = 0;
     var batch_size = 8;
+    // See cmd_get_params: capture the request id so the closure survives the
+    // Task.schedule(20) gaps without being clobbered by an interleaved command.
+    var captured_request_id = current_response_request_id;
 
     function read_batch() {
         try {
@@ -362,7 +384,7 @@ function cmd_get_auto_state(args) {
                     "total_params": param_count,
                     "automated_params": results,
                     "automated_count": results.length
-                });
+                }, captured_request_id);
             }
         } catch (e) {
             send_response({
@@ -372,7 +394,7 @@ function cmd_get_auto_state(args) {
                 "total_params": param_count,
                 "automated_params": results,
                 "automated_count": results.length
-            });
+            }, captured_request_id);
         }
     }
 
@@ -689,22 +711,37 @@ function correlate(a, b) {
 
 // ── Response Encoding ──────────────────────────────────────────────────────
 
-function send_response(obj) {
-    var json = JSON.stringify(obj);
+function send_response(obj, explicit_id) {
+    var response = obj || {};
+    // Async/batched handlers (cmd_get_params et al.) capture the request id in
+    // a closure and pass it explicitly here, because the module-level
+    // current_response_request_id can be clobbered by an interleaved command
+    // that arrives during a Task.schedule() gap between batches.
+    var rid = (typeof explicit_id === "string" && explicit_id !== "")
+        ? explicit_id
+        : current_response_request_id;
+    if (rid) {
+        response._livepilot_request_id = rid;
+    }
+    var json = JSON.stringify(response);
     var encoded = base64_encode(json);
 
     // Check if chunking needed (Max OSC packet limit ~8KB)
     if (encoded.length < 1400) {
         outlet(0, "/response", encoded);
     } else {
-        // Split into chunks
+        // Split into chunks. The request id rides the chunk header (first arg)
+        // so the Python side buckets chunks per-response and never mixes two
+        // commands' chunks — the id inside the JSON can't be read until the
+        // chunks are reassembled.
         var chunk_size = 1400;
         var total = Math.ceil(encoded.length / chunk_size);
         for (var i = 0; i < total; i++) {
             var piece = encoded.substring(i * chunk_size, (i + 1) * chunk_size);
-            outlet(0, "/response_chunk", i, total, piece);
+            outlet(0, "/response_chunk", (rid || ""), i, total, piece);
         }
     }
+    current_response_request_id = "";
 }
 
 function base64_encode(str) {
