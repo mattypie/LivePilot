@@ -31,9 +31,9 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-LivePilot requires Python 3.9+ (CI runs 3.11; the runtime gate in
-`bin/livepilot.js`, `manifest.json`, and getting-started.md all floor at 3.9).
-If `python3 --version` reports 3.8 or earlier, install a newer Python before
+LivePilot requires Python 3.12+ (CI runs 3.12; the runtime gate in
+`bin/livepilot.js`, `manifest.json`, README, and getting-started.md all floor at 3.12).
+If `python3 --version` reports 3.11 or earlier, install a newer Python before
 creating the venv.
 
 ### Two known-benign installation gotchas

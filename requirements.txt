@@ -1,12 +1,12 @@
 # LivePilot MCP Server dependencies
-numpy>=2.4.6
+numpy>=2.5.0
 fastmcp>=3.4.2,<3.5.0  # pinned upper bound — _get_all_tools() accesses private internals
 midiutil>=1.2.1
 pretty_midi>=0.2.11
 # v1.8 Perception Layer (offline analysis)
 pyloudnorm>=0.2.0
 soundfile>=0.14.0
-scipy>=1.17.1
+scipy>=1.18.0
 mutagen>=1.48.0
 # v1.10.5 Splice online catalog integration — required, not optional.
 # Without these, SpliceGRPCClient silently disables itself and search_samples

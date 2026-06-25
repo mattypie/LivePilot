@@ -15,12 +15,12 @@ const REQUIREMENTS = path.join(ROOT, "requirements.txt");
 // Python detection
 // ---------------------------------------------------------------------------
 
-// Minimum Python is 3.11, NOT 3.9: numpy>=2.4.6 and scipy>=1.17.1 (see
-// requirements.txt) publish no wheels and declare requires-python ">=3.11".
-// A 3.9/3.10 interpreter passes a looser gate, the venv is created, then
-// `pip install` aborts with a cryptic "no matching distribution" — the exact
-// install failure users hit. Gate here so we fail early with a clear message.
-const MIN_PY_MINOR = 11;
+// Minimum Python is 3.12: numpy>=2.5.0 and scipy>=1.18.0 (see requirements.txt)
+// declare requires-python ">=3.12". An older interpreter passes a looser gate,
+// the venv is created, then `pip install` aborts with a cryptic "no matching
+// distribution" — the exact install failure users hit. Gate here so we fail
+// early with a clear message.
+const MIN_PY_MINOR = 12;
 
 function findPython() {
   // On Windows, also try the "py -3" launcher which avoids the
@@ -47,7 +47,7 @@ function findPython() {
           const actualArgs = cmd === "py" ? ["-3"] : [];
           return { cmd: actualCmd, version: out, prefixArgs: actualArgs };
         }
-        // Found Python 3 but below 3.11 — remember the newest for diagnostics.
+        // Found Python 3 but below 3.12 — remember the newest for diagnostics.
         if (major === 3 && (!tooOld || minor > tooOld.minor)) {
           tooOld = { version: out, minor };
         }
@@ -122,8 +122,8 @@ function pipInstall(venvPy) {
     console.error("");
     console.error("LivePilot: dependency installation failed.");
     if (/No matching distribution|requires-python|Could not find a version/i.test(stderr)) {
-      console.error("  Most likely your Python is too old — LivePilot needs Python >= 3.11");
-      console.error("  (numpy/scipy ship no wheels for 3.9/3.10). Install 3.11+, delete the");
+      console.error("  Most likely your Python is too old — LivePilot needs Python >= 3.12");
+      console.error("  (numpy>=2.5 / scipy>=1.18 require Python 3.12). Install 3.12+, delete the");
       console.error("  .venv folder, and retry.");
     }
     const tail = stderr.split("\n").filter(Boolean).slice(-12);
@@ -309,12 +309,12 @@ async function doctor() {
   if (pyInfo && !pyInfo.tooOld) {
     console.log("  Python: %s (%s)", pyInfo.version, pyInfo.cmd);
   } else if (pyInfo && pyInfo.tooOld) {
-    console.log("  Python: %s found, but LivePilot needs >= 3.11", pyInfo.version);
-    console.log("    Fix: install Python 3.11+ (numpy/scipy ship no wheels for 3.9/3.10)");
+    console.log("  Python: %s found, but LivePilot needs >= 3.12", pyInfo.version);
+    console.log("    Fix: install Python 3.12+ (numpy>=2.5 / scipy>=1.18 require Python 3.12)");
     ok = false;
   } else {
-    console.log("  Python: NOT FOUND (need >= 3.11)");
-    console.log("    Fix: install Python 3.11+ and add to PATH");
+    console.log("  Python: NOT FOUND (need >= 3.12)");
+    console.log("    Fix: install Python 3.12+ and add to PATH");
     ok = false;
   }
 
@@ -737,12 +737,12 @@ async function setup() {
   if (pyInfo && !pyInfo.tooOld) {
     console.log("  ✓ %s", pyInfo.version);
   } else if (pyInfo && pyInfo.tooOld) {
-    console.log("  ✗ %s found, but LivePilot needs Python >= 3.11", pyInfo.version);
-    console.log("    (numpy/scipy ship no wheels for 3.9/3.10 — pip would fail)");
+    console.log("  ✗ %s found, but LivePilot needs Python >= 3.12", pyInfo.version);
+    console.log("    (numpy>=2.5 / scipy>=1.18 require Python 3.12 — pip would fail)");
     console.log("    Install: brew install python@3.12 (macOS) or python.org (Windows)");
     ok = false;
   } else {
-    console.log("  ✗ Python >= 3.11 not found");
+    console.log("  ✗ Python >= 3.12 not found");
     console.log("    Install: brew install python@3.12 (macOS) or python.org (Windows)");
     ok = false;
   }
@@ -784,7 +784,7 @@ async function setup() {
       ok = false;
     }
   } else if (pyInfo && pyInfo.tooOld) {
-    console.log("  ⊘ Skipped (%s found, need Python >= 3.11)", pyInfo.version);
+    console.log("  ⊘ Skipped (%s found, need Python >= 3.12)", pyInfo.version);
   } else {
     console.log("  ⊘ Skipped (no Python)");
   }
@@ -974,12 +974,12 @@ async function main() {
   const pyInfo = findPython();
   if (!pyInfo || pyInfo.tooOld) {
     if (pyInfo && pyInfo.tooOld) {
-      console.error("Error: found %s, but LivePilot requires Python >= 3.11.", pyInfo.version);
-      console.error("  numpy>=2.4.6 and scipy>=1.17.1 publish no wheels for Python 3.9/3.10,");
-      console.error("  so dependency installation would fail. Install Python 3.11 or newer.");
+      console.error("Error: found %s, but LivePilot requires Python >= 3.12.", pyInfo.version);
+      console.error("  numpy>=2.5.0 and scipy>=1.18.0 require Python >= 3.12,");
+      console.error("  so dependency installation would fail. Install Python 3.12 or newer.");
     } else {
-      console.error("Error: Python >= 3.11 is required but was not found.");
-      console.error("  Install Python 3.11+ and ensure 'python3' or 'python' is on your PATH.");
+      console.error("Error: Python >= 3.12 is required but was not found.");
+      console.error("  Install Python 3.12+ and ensure 'python3' or 'python' is on your PATH.");
     }
     console.error("");
     console.error("  macOS:   brew install python@3.12");
