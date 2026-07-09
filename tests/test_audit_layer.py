@@ -553,3 +553,86 @@ def test_rank_fixes_orders_by_priority():
     # high before medium before low
     assert priorities[0] == "high"
     assert priorities[-1] == "low"
+
+
+# ── §5.1 timbre check — canonical lowercase bands (review 2026-07-09) ──
+#
+# Two coupled bugs previously made this check a silent double no-op:
+# audit/tools.py called extract_timbre_fingerprint with the wrong signature
+# (always "n/a"), and _ROLE_BAND_EXPECTATIONS used uppercase names while
+# every spectrum producer emits lowercase (would have flipped to always
+# "fail" once the first bug was fixed). These tests pin both fixes.
+
+
+def _bands(**overrides) -> dict:
+    base = {
+        "sub_low": 0.02, "sub": 0.03, "low": 0.04, "low_mid": 0.05,
+        "mid": 0.06, "high_mid": 0.05, "high": 0.04, "presence": 0.03,
+        "air": 0.02,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_check_timbre_hat_air_presence_passes():
+    fp = {"bands": _bands(air=0.6, presence=0.5)}
+    result = checks.check_timbre("hat", fp)
+    assert result["severity"] == "pass"
+
+
+def test_check_timbre_kick_sub_dominant_passes():
+    fp = {"bands": _bands(sub_low=0.7, sub=0.5)}
+    result = checks.check_timbre("kick", fp)
+    assert result["severity"] == "pass"
+
+
+def test_check_timbre_hat_mid_dominant_fails():
+    # Mid-dominant "hat" = wrong sample per CLAUDE.md §5.1
+    fp = {"bands": _bands(mid=0.8, low_mid=0.7)}
+    result = checks.check_timbre("hat", fp)
+    assert result["severity"] == "fail"
+    assert result["issues"][0]["code"] == "wrong_band_dominance"
+
+
+def test_check_timbre_secondary_band_in_range_warns():
+    # Top band off-role but second band in range → warn, not fail
+    fp = {"bands": _bands(low_mid=0.8, presence=0.7)}
+    result = checks.check_timbre("hat", fp)
+    assert result["severity"] == "warn"
+
+
+def test_check_timbre_uppercase_producer_still_matches():
+    # Defensive case-fold: an uppercase-emitting producer must not fail
+    fp = {"bands": {"AIR": 0.6, "PRESENCE": 0.5, "MID": 0.1}}
+    result = checks.check_timbre("hat", fp)
+    assert result["severity"] == "pass"
+
+
+def test_maybe_get_timbre_fingerprint_plumbs_cached_spectrum():
+    from types import SimpleNamespace
+    from mcp_server.audit.tools import _maybe_get_timbre_fingerprint
+
+    class _FakeCache:
+        def get(self, key):
+            if key == "spectrum":
+                return {"value": _bands(air=0.6, presence=0.5)}
+            if key == "loudness":
+                return {"value": {"rms": 0.2, "peak": 0.6}}
+            return None
+
+    ctx = SimpleNamespace(lifespan_context={"spectral": _FakeCache()})
+    fp = _maybe_get_timbre_fingerprint(ctx, track_index=3)
+    assert fp is not None
+    assert fp["source"] == "master_bus_unsoloed"
+    assert fp["bands"]["air"] == 0.6
+    assert "brightness" in fp["dimensions"]
+    # And the fingerprint round-trips into the check
+    assert checks.check_timbre("hat", fp)["severity"] == "pass"
+
+
+def test_maybe_get_timbre_fingerprint_none_without_cache():
+    from types import SimpleNamespace
+    from mcp_server.audit.tools import _maybe_get_timbre_fingerprint
+
+    ctx = SimpleNamespace(lifespan_context={})
+    assert _maybe_get_timbre_fingerprint(ctx, track_index=0) is None

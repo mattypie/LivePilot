@@ -53,18 +53,21 @@ def infer_role(track_name: str, devices: list[dict]) -> str:
 # ── §5.1 Timbre via spectrum ─────────────────────────────────────────
 
 # Loose role → expected spectrum-band dominance.
-# Uses 7-band convention: SUB_LOW, LOW, LOW_MID, MID, PRESENCE, HIGH, AIR.
+# Uses the canonical lowercase 9-band vocabulary every spectrum producer
+# emits (m4l_bridge BAND_NAMES_9 / synthesis_brain.timbre._BANDS):
+# sub_low, sub, low, low_mid, mid, high_mid, high, presence, air.
+# Comparison in check_timbre is case-folded defensively.
 _ROLE_BAND_EXPECTATIONS: dict[str, tuple[str, ...]] = {
-    "kick": ("SUB_LOW", "LOW", "MID"),
-    "snare": ("MID", "PRESENCE", "HIGH"),
-    "hat": ("PRESENCE", "HIGH", "AIR"),
-    "perc": ("MID", "PRESENCE", "HIGH"),
-    "bass": ("SUB_LOW", "LOW", "LOW_MID"),
-    "pad": ("LOW_MID", "MID", "PRESENCE"),
-    "lead": ("MID", "PRESENCE", "HIGH"),
-    "atmos": ("LOW_MID", "MID", "PRESENCE", "HIGH"),
-    "vox": ("MID", "PRESENCE", "HIGH"),
-    "fx": ("PRESENCE", "HIGH", "AIR"),
+    "kick": ("sub_low", "sub", "low", "mid"),
+    "snare": ("mid", "high_mid", "presence", "high"),
+    "hat": ("presence", "high", "air"),
+    "perc": ("mid", "high_mid", "presence", "high"),
+    "bass": ("sub_low", "sub", "low", "low_mid"),
+    "pad": ("low_mid", "mid", "high_mid", "presence"),
+    "lead": ("mid", "high_mid", "presence", "high"),
+    "atmos": ("low_mid", "mid", "high_mid", "presence", "high"),
+    "vox": ("mid", "high_mid", "presence", "high"),
+    "fx": ("presence", "high", "air"),
 }
 
 
@@ -93,10 +96,11 @@ def check_timbre(role: str, fingerprint: dict | None) -> dict:
             "issues": [],
             "evidence": {"bands": bands},
         }
-    # Find dominant band(s) — top1 is the discriminator
-    sorted_bands = sorted(bands.items(), key=lambda kv: kv[1], reverse=True)
-    top2 = [b for b, _ in sorted_bands[:2]]
-    expected_set = set(expected)
+    # Find dominant band(s) — top1 is the discriminator. Case-fold so an
+    # uppercase-emitting producer can never silently fail every comparison.
+    sorted_bands = sorted(bands.items(), key=lambda kv: float(kv[1] or 0.0), reverse=True)
+    top2 = [str(b).lower() for b, _ in sorted_bands[:2]]
+    expected_set = {e.lower() for e in expected}
     if top2[0] in expected_set:
         return {
             "severity": "pass",

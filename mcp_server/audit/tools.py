@@ -40,19 +40,40 @@ def _get_ableton(ctx: Context):
 
 
 def _maybe_get_timbre_fingerprint(ctx: Context, track_index: int) -> dict | None:
-    """Pull a per-track timbre fingerprint via the synthesis_brain timbre helper.
+    """Build a timbre fingerprint from the M4L analyzer's cached spectral data.
 
-    Returns None when the M4L bridge is offline or no fingerprint is available.
-    Does NOT solo the track — uses cached spectral data only.
+    Returns None when the M4L bridge is offline or no spectrum is cached.
+    Does NOT solo the track — the bands come from the MASTER bus, so with
+    other tracks playing the read is approximate. The returned dict carries
+    source="master_bus_unsoloed" so downstream consumers can label it.
+
+    extract_timbre_fingerprint is a pure function over already-fetched
+    spectrum/loudness/spectral_shape dicts — the data plumbing lives here.
     """
     try:
         from ..synthesis_brain.timbre import extract_timbre_fingerprint  # type: ignore
     except Exception:
         return None
     try:
-        result = extract_timbre_fingerprint(ctx, track_index)  # type: ignore[arg-type]
-        if isinstance(result, dict) and result.get("bands"):
-            return result
+        cache = ctx.lifespan_context.get("spectral")
+        if cache is None:
+            return None
+        snap = cache.get("spectrum")
+        bands = (snap or {}).get("value") if isinstance(snap, dict) else None
+        if not bands:
+            return None
+        loud = cache.get("loudness")
+        shape = cache.get("spectral_shape")
+        fp = extract_timbre_fingerprint(
+            spectrum={"bands": bands},
+            loudness=(loud or {}).get("value") if isinstance(loud, dict) else None,
+            spectral_shape=(shape or {}).get("value") if isinstance(shape, dict) else None,
+        )
+        return {
+            "bands": dict(bands),
+            "dimensions": fp.to_dict(),
+            "source": "master_bus_unsoloed",
+        }
     except Exception as exc:
         logger.debug("audit_layer timbre fetch failed: %s", exc)
     return None
