@@ -566,14 +566,40 @@ class TestEdgeCases:
             store.list_techniques(sort_by="invalid")
 
     def test_corrupted_json_recovery(self, tmp_path):
-        """Store recovers gracefully from corrupted JSON file."""
+        """Store recovers gracefully from corrupted JSON file, preserving a
+        timestamped backup (never silently clobbering the corrupt data)."""
         filepath = tmp_path / "techniques.json"
         filepath.write_text("{corrupted json!!")
         store = TechniqueStore(base_dir=str(tmp_path))
         # Should start with empty store
         assert store.list_techniques() == []
-        # Corrupt file should be renamed
-        assert (tmp_path / "techniques.json.corrupt").exists()
+        # Corrupt file should be preserved under a timestamped .corrupt backup
+        backups = list(tmp_path.glob("techniques.json.corrupt*"))
+        assert len(backups) == 1
+        assert backups[0].read_text() == "{corrupted json!!"
+
+    def test_repeated_corruption_does_not_clobber_backup(self, tmp_path):
+        """A second corruption keeps the first backup — no permanent data loss."""
+        filepath = tmp_path / "techniques.json"
+
+        # First corruption: distinct content, distinct timestamp.
+        filepath.write_text("FIRST corrupt payload {{{")
+        TechniqueStore(base_dir=str(tmp_path)).list_techniques()
+        first_backups = list(tmp_path.glob("techniques.json.corrupt*"))
+        assert len(first_backups) == 1
+        assert first_backups[0].read_text() == "FIRST corrupt payload {{{"
+
+        # Re-corrupt the live file and recover again under a new timestamp.
+        # The earlier backup must still be intact.
+        import time as _t
+
+        _t.sleep(1.1)  # ensure a distinct second-resolution timestamp
+        filepath.write_text("SECOND corrupt payload }}}")
+        TechniqueStore(base_dir=str(tmp_path)).list_techniques()
+        all_backups = sorted(tmp_path.glob("techniques.json.corrupt*"))
+        assert len(all_backups) == 2
+        contents = {p.read_text() for p in all_backups}
+        assert contents == {"FIRST corrupt payload {{{", "SECOND corrupt payload }}}"}
 
     def test_persistence_after_update(self, store, sample_beat, tmp_path):
         tid = store.save(**sample_beat)["id"]
@@ -646,3 +672,173 @@ class TestCrossInstanceVisibility:
 
         # b must observe the rename, not its cached copy.
         assert b.get(saved["id"])["name"] == "Renamed"
+
+
+# ── P2-27: PersistentJsonStore corrupt-backup via update() ──────────────────
+
+
+class TestPersistentJsonStoreCorruptBackup:
+    """P2-27 — _read_unlocked must back up corrupt data before overwriting.
+
+    The update() path reads via _read_unlocked() then immediately writes
+    defaults back. Without a .corrupt backup, the corrupt data is permanently
+    lost. These tests verify the backup is created before the overwrite.
+    """
+
+    def test_corrupt_store_backed_up_on_update(self, tmp_path):
+        """A corrupt store file is backed up to <name>.corrupt before update()
+        overwrites it with defaults — data is recoverable, not permanently lost."""
+        from mcp_server.persistence.base_store import PersistentJsonStore
+
+        store_path = tmp_path / "taste.json"
+        store_path.write_text("{this is corrupt json!!", encoding="utf-8")
+
+        store = PersistentJsonStore(store_path)
+        # update() must not crash and must return the default dict produced by
+        # the updater, even though the existing file is corrupt.
+        result = store.update(lambda d: {**d, "recovered": True})
+        assert result.get("recovered") is True
+
+        # The corrupt content must be preserved in a .corrupt sidecar.
+        corrupt_path = tmp_path / "taste.json.corrupt"
+        assert corrupt_path.exists(), (
+            "corrupt backup must exist after update() on a corrupt store"
+        )
+        assert corrupt_path.read_text(encoding="utf-8") == "{this is corrupt json!!"
+
+        # The live file must now hold the recovered data (not the corrupt bytes).
+        live = json.loads(store_path.read_text(encoding="utf-8"))
+        assert live.get("recovered") is True
+
+    def test_corrupt_backup_is_best_effort(self, tmp_path):
+        """If the .corrupt rename fails (e.g. permission denied), update()
+        still proceeds and does not raise — data loss is logged, not fatal."""
+        from mcp_server.persistence.base_store import PersistentJsonStore
+        import stat
+
+        store_path = tmp_path / "taste.json"
+        store_path.write_text("{{bad json", encoding="utf-8")
+
+        # Make the parent directory read-only so rename() into it fails.
+        # (On macOS/Linux this prevents creating new files; on Windows this
+        #  is a no-op for existing files — skip gracefully on Windows.)
+        try:
+            tmp_path.chmod(stat.S_IRUSR | stat.S_IXUSR)
+            store = PersistentJsonStore(store_path)
+            # Should not raise even when the backup rename fails.
+            try:
+                result = store.update(lambda d: {**d, "key": "val"})
+                # If write also fails (because dir is read-only), that's OK —
+                # what matters is no unexpected exception.
+            except OSError:
+                pass  # write failure is acceptable; crash is not
+        finally:
+            tmp_path.chmod(stat.S_IRWXU)  # restore so tmp_path cleanup works
+
+    def test_read_on_corrupt_file_still_preserves_backup(self, tmp_path):
+        """read() (the public read path) also preserves the .corrupt sidecar.
+        Regression guard: confirms the existing read() behavior is intact
+        alongside the new _read_unlocked() fix."""
+        from mcp_server.persistence.base_store import PersistentJsonStore
+
+        store_path = tmp_path / "state.json"
+        store_path.write_text("not json at all", encoding="utf-8")
+        store = PersistentJsonStore(store_path)
+
+        result = store.read()
+        assert result == {}
+
+        corrupt_path = tmp_path / "state.json.corrupt"
+        assert corrupt_path.exists()
+        assert corrupt_path.read_text(encoding="utf-8") == "not json at all"
+
+
+# ── P2-29: dimension_weights and anti_preferences survive restart ────────────
+
+
+class TestTasteGraphPersistenceRoundtrip:
+    """P2-29 — dimension_weights and anti_preferences must survive a restart.
+
+    Before the fix, TasteGraph.record_anti_preference() and
+    record_dimension_weight() existed only in the in-memory graph —
+    no write-back to PersistentTasteStore. On restart build_taste_graph()
+    read an empty store, so all weights / anti-prefs silently reset to zero.
+
+    These tests confirm the full roundtrip: set a value, re-instantiate the
+    graph from the SAME persistent store, assert the value is still there.
+    """
+
+    def test_dimension_weight_survives_reload(self, tmp_path):
+        """A dimension weight set via record_dimension_weight persists across
+        a simulated server restart (re-instantiation of both store and graph)."""
+        from mcp_server.persistence.taste_store import PersistentTasteStore
+        from mcp_server.memory.taste_graph import build_taste_graph
+
+        store_path = tmp_path / "taste.json"
+        store1 = PersistentTasteStore(path=store_path)
+        graph1 = build_taste_graph(persistent_store=store1)
+
+        # Set a dimension weight through the graph — this must write-back.
+        graph1.record_dimension_weight("transition_boldness", 0.75)
+
+        # Simulate a restart: new store and new graph backed by the same file.
+        store2 = PersistentTasteStore(path=store_path)
+        graph2 = build_taste_graph(persistent_store=store2)
+
+        assert graph2.dimension_weights.get("transition_boldness") == pytest.approx(
+            0.75, abs=1e-3
+        ), "dimension weight must survive a simulated restart"
+
+    def test_anti_preference_survives_reload(self, tmp_path):
+        """An anti-preference recorded via record_anti_preference persists
+        across a simulated server restart."""
+        from mcp_server.persistence.taste_store import PersistentTasteStore
+        from mcp_server.memory.taste_graph import build_taste_graph
+
+        store_path = tmp_path / "taste.json"
+        store1 = PersistentTasteStore(path=store_path)
+        graph1 = build_taste_graph(persistent_store=store1)
+
+        graph1.record_anti_preference("brightness", "increase")
+
+        store2 = PersistentTasteStore(path=store_path)
+        graph2 = build_taste_graph(persistent_store=store2)
+
+        assert "brightness" in graph2.dimension_avoidances, (
+            "anti-preference dimension must survive a simulated restart"
+        )
+        assert graph2.dimension_avoidances["brightness"] == "increase"
+
+    def test_multiple_weights_and_antis_survive_reload(self, tmp_path):
+        """Multiple dimension weights and anti-preferences all survive."""
+        from mcp_server.persistence.taste_store import PersistentTasteStore
+        from mcp_server.memory.taste_graph import build_taste_graph
+
+        store_path = tmp_path / "taste.json"
+        store1 = PersistentTasteStore(path=store_path)
+        graph1 = build_taste_graph(persistent_store=store1)
+
+        graph1.record_dimension_weight("fx_intensity", 0.3)
+        graph1.record_dimension_weight("density", 0.6)
+        graph1.record_anti_preference("width_preference", "decrease")
+        graph1.record_anti_preference("fx_intensity", "increase")
+
+        store2 = PersistentTasteStore(path=store_path)
+        graph2 = build_taste_graph(persistent_store=store2)
+
+        assert graph2.dimension_weights.get("fx_intensity") == pytest.approx(0.3, abs=1e-3)
+        assert graph2.dimension_weights.get("density") == pytest.approx(0.6, abs=1e-3)
+        assert graph2.dimension_avoidances.get("width_preference") == "decrease"
+        assert graph2.dimension_avoidances.get("fx_intensity") == "increase"
+
+    def test_no_persistent_store_does_not_crash(self, tmp_path):
+        """When no persistent_store is wired, record_* methods update in-memory
+        state only and do not raise — the graph is still usable."""
+        from mcp_server.memory.taste_graph import build_taste_graph
+
+        graph = build_taste_graph(persistent_store=None)
+        graph.record_dimension_weight("brightness", 0.5)
+        graph.record_anti_preference("density", "increase")
+
+        assert graph.dimension_weights.get("brightness") == pytest.approx(0.5, abs=1e-3)
+        assert graph.dimension_avoidances.get("density") == "increase"

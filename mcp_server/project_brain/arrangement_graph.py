@@ -48,6 +48,10 @@ def build_arrangement_graph(
             section_type=ce_sec.section_type.value,
             energy=ce_sec.energy,
             density=ce_sec.density,
+            # Clip-presence active tracks — includes audio tracks that carry
+            # no MIDI notes. Without this, role inference would only see
+            # tracks that appear in notes_map and drop every audio track.
+            tracks_active=list(getattr(ce_sec, "tracks_active", []) or []),
         ))
 
     # Build boundary list (transitions between adjacent sections)

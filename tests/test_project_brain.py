@@ -370,6 +370,76 @@ class TestRoleGraphBuilder:
         graph = build_role_graph(sections, [], {})
         assert len(graph.roles) == 0
 
+    def test_audio_track_with_clip_no_notes_gets_role(self):
+        # Regression: an audio track has a clip present (tracks_active) but
+        # no MIDI notes. It must still receive a RoleNode. Previously
+        # active_tracks was reconstructed SOLELY from notes_map, so audio
+        # tracks were silently dropped from role inference.
+        sections = [
+            {
+                "section_id": "sec_00",
+                "start_bar": 0,
+                "end_bar": 8,
+                "section_type": "verse",
+                "energy": 0.5,
+                "density": 0.5,
+                "tracks_active": [0],
+            },
+        ]
+        track_data = [
+            {"index": 0, "name": "Vocal", "devices": []},
+        ]
+        # Audio track: clip present but no notes (audio clips return no notes).
+        notes_map = {"sec_00": {}}
+        graph = build_role_graph(sections, track_data, notes_map)
+
+        role_for_track0 = [r for r in graph.roles if r.track_index == 0]
+        assert role_for_track0, (
+            "audio track with a clip but no notes must still get a RoleNode"
+        )
+        assert role_for_track0[0].section_id == "sec_00"
+
+    def test_all_audio_section_not_dropped_when_other_section_has_notes(self):
+        # Regression: the `not active_tracks and not notes_map` fallback only
+        # fired when notes_map was GLOBALLY empty. An all-audio section then
+        # produced ZERO RoleNodes whenever ANY other section had notes.
+        sections = [
+            {
+                "section_id": "sec_00",
+                "start_bar": 0,
+                "end_bar": 8,
+                "section_type": "intro",
+                "energy": 0.3,
+                "density": 0.3,
+                "tracks_active": [0],  # audio-only section
+            },
+            {
+                "section_id": "sec_01",
+                "start_bar": 8,
+                "end_bar": 16,
+                "section_type": "verse",
+                "energy": 0.6,
+                "density": 0.6,
+                "tracks_active": [0, 1],
+            },
+        ]
+        track_data = [
+            {"index": 0, "name": "Drums", "devices": [{"class_name": "DrumGroupDevice"}]},
+            {"index": 1, "name": "Lead", "devices": []},
+        ]
+        # Only sec_01 carries notes (for track 1). sec_00 is all-audio.
+        notes_map = {
+            "sec_01": {1: [{"pitch": 72, "duration": 1.0, "start_time": 0}]},
+        }
+        graph = build_role_graph(sections, track_data, notes_map)
+
+        # The all-audio section must produce at least one RoleNode.
+        sec00_roles = [r for r in graph.roles if r.section_id == "sec_00"]
+        assert sec00_roles, (
+            "all-audio section must not be dropped when another section "
+            "has notes (no spurious empty / no_foreground result)"
+        )
+
     def test_low_confidence_tracked(self):
         sections = [
             {

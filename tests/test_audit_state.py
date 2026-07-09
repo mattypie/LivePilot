@@ -127,3 +127,39 @@ def test_count_wavetable_routings_handles_alt_response_key():
     ]}})
     devices = [{"class_name": "Wavetable"}]
     assert state.count_wavetable_routings(fake, 0, devices) == 1
+
+
+# ── InstrumentVector (real Wavetable class_name in some Live builds) ────
+
+
+def test_count_wavetable_routings_accepts_instrument_vector():
+    """InstrumentVector is how Ableton reports the Wavetable synth at runtime."""
+    # The real remote handler returns the matrix under the 'routings' key —
+    # feed that exact shape so the metric is exercised end-to-end (WT2).
+    fake = _FakeAbleton({"get_wavetable_mod_matrix": {"routings": [
+        {"source": "lfo1", "target": "filter", "amount": 0.7},
+        {"source": "env2", "target": "pitch", "amount": 0.0},
+    ]}})
+    devices = [{"class_name": "InstrumentVector"}]
+    assert state.count_wavetable_routings(fake, 0, devices) == 1
+
+
+def test_count_wavetable_routings_reads_real_routings_key():
+    """Regression lock: the production response key is 'routings'. If the parse
+    reverts to only matrix/entries, this returns 0 and fails."""
+    fake = _FakeAbleton({"get_wavetable_mod_matrix": {"routings": [
+        {"amount": 0.7}, {"amount": 0.4}, {"amount": 0.0},
+    ]}})
+    devices = [{"class_name": "Wavetable"}]
+    assert state.count_wavetable_routings(fake, 0, devices) == 2
+
+
+def test_count_wavetable_routings_skips_other_class_names():
+    """class_names other than Wavetable / InstrumentVector are skipped."""
+    fake = _FakeAbleton({})  # should never be called
+    devices = [
+        {"class_name": "Drift"},
+        {"class_name": "VectorFM"},  # hypothetical M4L device
+        {"class_name": "EQ Eight"},
+    ]
+    assert state.count_wavetable_routings(fake, 0, devices) == 0

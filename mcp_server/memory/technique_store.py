@@ -2,12 +2,16 @@
 
 import copy
 import json
+import logging
 import os
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 VALID_TYPES = frozenset(
@@ -74,9 +78,28 @@ class TechniqueStore:
                     with open(self._file, "r") as f:
                         self._data = json.load(f)
                     self._loaded_sig = self._file_signature()
-                except (json.JSONDecodeError, ValueError):
-                    corrupt = self._file.with_suffix(".json.corrupt")
-                    self._file.rename(corrupt)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    # Preserve the unparseable file before replacing it with
+                    # defaults, so the user's data stays recoverable. Use a
+                    # timestamped name so repeated corruptions don't clobber
+                    # an earlier backup (a plain ".json.corrupt" target would
+                    # be silently overwritten on POSIX / raise on Windows).
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                    corrupt = self._file.with_suffix(f".json.corrupt.{ts}")
+                    try:
+                        self._file.rename(corrupt)
+                        logger.warning(
+                            "techniques.json failed to parse (%s); backed up "
+                            "corrupt file to %s and reinitialized with defaults",
+                            exc, corrupt,
+                        )
+                    except OSError as rename_exc:
+                        logger.warning(
+                            "techniques.json failed to parse (%s) and the "
+                            "corrupt backup could not be written (%s); "
+                            "reinitialized with defaults — prior data lost",
+                            exc, rename_exc,
+                        )
                     self._data = {"version": 1, "techniques": []}
                     self._loaded_sig = None
             else:

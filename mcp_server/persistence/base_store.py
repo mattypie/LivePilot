@@ -70,6 +70,17 @@ class PersistentJsonStore:
         try:
             return json.loads(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
+            # Mirror the read() corruption-recovery path: preserve the
+            # corrupt file as <name>.corrupt so it can be inspected/recovered
+            # rather than being silently overwritten by the next _write_unlocked
+            # call (which update() always performs after _read_unlocked).
+            # Best-effort — a backup failure must not prevent the store from
+            # recovering with defaults.
+            corrupt = self._path.with_suffix(self._path.suffix + ".corrupt")
+            try:
+                self._path.rename(corrupt)
+            except OSError:
+                pass
             return {}
 
     def _write_unlocked(self, data: dict) -> None:

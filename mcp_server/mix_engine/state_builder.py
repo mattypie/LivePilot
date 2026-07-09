@@ -155,18 +155,73 @@ def build_balance_state(
 # ── Masking ─────────────────────────────────────────────────────────
 
 
+def _extract_per_track_bands(spectrum: dict) -> dict[int, dict[str, float]]:
+    """Extract per-track band-energy dicts from a spectrum payload.
+
+    Supports two shapes:
+    - Per-track:  {"tracks": {"0": {"sub": 0.8, "low": 0.6, ...}, ...}}
+    - Master-only: {"bands": {...}} — no per-track data, returns empty dict.
+
+    Returns {track_index: {band_lower: energy_float, ...}}.
+    Band keys are lowercased so callers can use the collision-rule vocabulary
+    ("sub", "low", "low_mid", "mid", "high_mid", "presence", "high") directly.
+    """
+    raw_tracks = spectrum.get("tracks")
+    if not raw_tracks or not isinstance(raw_tracks, dict):
+        return {}
+    result: dict[int, dict[str, float]] = {}
+    for key, bands in raw_tracks.items():
+        try:
+            idx = int(key)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(bands, dict):
+            result[idx] = {k.lower(): float(v) for k, v in bands.items()}
+    return result
+
+
+def _overlap_score(bands_a: dict[str, float], bands_b: dict[str, float], band: str) -> float:
+    """Compute normalised spectral overlap for a single band.
+
+    Uses the geometric mean of the two tracks' energy in that band so that
+    the score is high only when BOTH tracks are active there.  Returns a
+    value in [0, 1] (or 0.0 when the band is absent from either track).
+    """
+    ea = bands_a.get(band, 0.0)
+    eb = bands_b.get(band, 0.0)
+    return math.sqrt(max(ea, 0.0) * max(eb, 0.0))
+
+
 def build_masking_map(
     spectrum: Optional[dict],
     track_roles: Optional[dict[int, str]] = None,
 ) -> MaskingMap:
     """Build MaskingMap from spectrum data.
 
-    Uses per-track spectrum bands if available, otherwise returns empty.
-    Spectrum shape: {"tracks": {track_idx_str: {band: value, ...}, ...}}
-    or flat {"bands": {band: value}} for master-only.
+    Spectrum shapes accepted
+    ------------------------
+    Per-track (preferred):
+        {"tracks": {"0": {"sub": 0.8, "low": 0.6, ...}, "1": {...}, ...}}
+    Master-only (fallback):
+        {"bands": {"sub": 0.9, ...}}
 
-    For Phase 1 we detect masking heuristically from role collisions
-    in known problem bands (kick/bass in sub/low, bass/chords in low_mid).
+    Severity calculation (hybrid)
+    -----------------------------
+    When per-track band energy IS available for both members of a colliding
+    pair, ``severity`` is scaled by the geometric-mean overlap in the
+    colliding band:
+
+        severity = base_severity * overlap_score(band_a, band_b, band)
+
+    This means two tracks that are perfectly EQ-separated in that band
+    (one of them has ~0 energy there) produce a near-zero severity, while
+    tracks that are both loud in the same band produce a severity close to
+    the role-prior constant.
+
+    When per-track data is absent (master-bus spectrum only), the original
+    role-prior constant is kept unchanged.  Each entry is labelled with
+    ``measured=True/False`` and ``severity_basis`` so downstream consumers
+    can distinguish real measurements from heuristics.
     """
     entries: list[MaskingEntry] = []
     track_roles = track_roles or {}
@@ -174,12 +229,18 @@ def build_masking_map(
     if not spectrum or not track_roles:
         return MaskingMap(entries=[], worst_pair=None)
 
+    # Extract per-track bands if available (empty dict = master-bus only)
+    per_track_bands = _extract_per_track_bands(spectrum)
+
     # Build role->indices mapping
     role_to_indices: dict[str, list[int]] = {}
     for idx, role in track_roles.items():
         role_to_indices.setdefault(_masking_role(role), []).append(idx)
 
-    # Known problematic role pairs and their collision bands
+    # Known problematic role pairs and their collision bands.
+    # Each tuple: (role_a, role_b, band, base_severity)
+    # base_severity is the heuristic prior; it may be scaled by spectral
+    # overlap when per-track data is present.
     collision_rules: list[tuple[str, str, str, float]] = [
         ("kick", "bass", "sub", 0.7),
         ("kick", "bass", "low", 0.6),
@@ -197,11 +258,29 @@ def build_masking_map(
         for ia in indices_a:
             for ib in indices_b:
                 if ia != ib:
+                    bands_a = per_track_bands.get(ia)
+                    bands_b = per_track_bands.get(ib)
+
+                    if bands_a is not None and bands_b is not None:
+                        # Scale the role-prior by actual spectral overlap.
+                        overlap = _overlap_score(bands_a, bands_b, band)
+                        severity = base_severity * overlap
+                        measured = True
+                        severity_basis = "spectral_overlap"
+                    else:
+                        # No per-track data — keep the role-prior constant and
+                        # label it so callers know it is not a measurement.
+                        severity = base_severity
+                        measured = False
+                        severity_basis = "role_heuristic"
+
                     entries.append(MaskingEntry(
                         track_a=ia,
                         track_b=ib,
                         overlap_band=band,
-                        severity=base_severity,
+                        severity=severity,
+                        measured=measured,
+                        severity_basis=severity_basis,
                     ))
 
     worst = None

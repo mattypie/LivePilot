@@ -216,6 +216,49 @@ class TasteGraph:
                 logger.debug("update_novelty failed: %s", exc)
                 pass  # persistence is best-effort
 
+    def record_anti_preference(self, dimension: str, direction: str) -> None:
+        """Record a dimension avoidance and persist it across restarts.
+
+        Mirrors record_move_outcome's write-back contract: updates the
+        in-memory dimension_avoidances map AND persists to disk so the
+        avoidance survives a server restart. build_taste_graph hydrates
+        anti_preferences from the same persistent store, so without this
+        write-back the persisted read branch would stay dead (P2-29).
+        """
+        now = int(time.time() * 1000)
+        self.dimension_avoidances[dimension] = direction
+        self.evidence_count += 1
+        self.last_updated_ms = now
+
+        # Write-back to persistent store
+        if self._persistent_store is not None:
+            try:
+                self._persistent_store.record_anti_preference(dimension, direction)
+            except Exception as exc:
+                logger.debug("record_anti_preference failed: %s", exc)
+                pass  # persistence is best-effort
+
+    def record_dimension_weight(self, dimension: str, value: float) -> None:
+        """Set a dimension preference weight and persist it across restarts.
+
+        Mirrors record_move_outcome's write-back contract: updates the
+        in-memory dimension_weights map AND persists to disk so the weight
+        survives a server restart. build_taste_graph hydrates
+        dimension_weights from the same persistent store, so without this
+        write-back the persisted read branch would stay dead (P2-29).
+        """
+        now = int(time.time() * 1000)
+        self.dimension_weights[dimension] = value
+        self.last_updated_ms = now
+
+        # Write-back to persistent store
+        if self._persistent_store is not None:
+            try:
+                self._persistent_store.record_dimension_weight(dimension, value)
+            except Exception as exc:
+                logger.debug("record_dimension_weight failed: %s", exc)
+                pass  # persistence is best-effort
+
     # ── Ranking ──────────────────────────────────────────────────────
 
     def rank_moves(

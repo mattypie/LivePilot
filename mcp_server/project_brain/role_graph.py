@@ -41,18 +41,24 @@ def build_role_graph(
     # Convert brain section dicts to composition-engine SectionNodes
     ce_sections = []
     for sec in sections:
-        # Determine which tracks are active in this section
-        # If notes_map has data for this section, those tracks are active
+        # Determine which tracks are active in this section.
+        # Primary source is the clip-presence matrix (`tracks_active`),
+        # which includes AUDIO tracks that carry no MIDI notes. Union in
+        # any note-bearing tracks as a fallback so MIDI-only data (legacy
+        # callers that pass no tracks_active) still produces roles.
         section_id = sec.get("section_id", sec.get("id", ""))
-        active_tracks = []
+        active_set = {int(t) for t in (sec.get("tracks_active") or [])}
         section_notes = notes_map.get(section_id, {})
         for t_idx, notes in section_notes.items():
             if notes:
-                active_tracks.append(t_idx)
+                active_set.add(int(t_idx))
 
-        # Also include all tracks if no notes data (assume all active)
-        if not active_tracks and not notes_map:
-            active_tracks = [t.get("index", 0) for t in track_data]
+        # Also include all tracks if no clip-presence and no notes data
+        # (assume all active — e.g. a bare section with no matrix info).
+        if not active_set and not notes_map:
+            active_set = {int(t.get("index", 0)) for t in track_data}
+
+        active_tracks = sorted(active_set)
 
         try:
             stype = CESectionType(sec.get("section_type", "unknown"))

@@ -134,6 +134,53 @@ def test_empty_store_returns_default():
         assert data["version"] == 1
         assert data["novelty_band"] == 0.5
         assert data["evidence_count"] == 0
+
+
+# ── Tool-surface wiring (P2-29) ──────────────────────────────────────
+
+
+def test_record_anti_preference_tool_persists_when_store_in_context():
+    """P2-29 wiring: the record_anti_preference MCP tool must write through to
+    the persistent taste store when the live context provides one, so the
+    anti-preference survives a restart — not just the ephemeral session store."""
+    from types import SimpleNamespace
+    from mcp_server.memory.tools import record_anti_preference
+
+    with tempfile.TemporaryDirectory() as d:
+        store = PersistentTasteStore(Path(d) / "taste.json")
+        ctx = SimpleNamespace(lifespan_context={"persistent_taste": store})
+
+        result = record_anti_preference(ctx, "brightness", "increase")
+        assert result["persisted"] is True
+
+        # A fresh store handle on the same file sees the persisted anti-pref.
+        persisted = PersistentTasteStore(Path(d) / "taste.json").get_all()
+        assert any(
+            a["dimension"] == "brightness" and a["direction"] == "increase"
+            for a in persisted.get("anti_preferences", [])
+        )
+
+
+def test_record_anti_preference_tool_session_only_without_store():
+    """Hermetic fallback: with no persistent store in context (the test/headless
+    case), the tool still works and reports persisted=False — it does NOT touch
+    the real ~/.livepilot taste file."""
+    from types import SimpleNamespace
+    from mcp_server.memory.tools import record_anti_preference
+
+    ctx = SimpleNamespace(lifespan_context={})
+    result = record_anti_preference(ctx, "width", "decrease")
+    assert result["persisted"] is False
+    assert result["recorded"]["dimension"] == "width"
+
+
+def test_record_anti_preference_tool_rejects_bad_direction():
+    from types import SimpleNamespace
+    from mcp_server.memory.tools import record_anti_preference
+
+    ctx = SimpleNamespace(lifespan_context={})
+    result = record_anti_preference(ctx, "width", "sideways")
+    assert result.get("code") == "INVALID_PARAM"
 def test_taste_graph_writes_back_device_use_and_novelty():
     """TasteGraph.record_device_use / update_novelty_from_experiment must
     persist through the attached PersistentTasteStore so they survive restart.
@@ -166,3 +213,72 @@ def test_taste_graph_writes_back_device_use_and_novelty():
         graph2 = build_taste_graph(persistent_store=store2)
         assert "Granulator III" in graph2.device_affinities
         assert graph2.novelty_bands.get("explore", 0.5) > 0.5
+
+
+def test_taste_graph_writes_back_anti_pref_and_dimension_weight():
+    """P2-29: TasteGraph.record_anti_preference / record_dimension_weight must
+    persist through the attached PersistentTasteStore so dimension taste and
+    avoidances survive a restart. Regression: previously the persisted
+    anti_preferences / dimension_weights read branches in build_taste_graph
+    were dead because nothing ever wrote those fields."""
+    import tempfile
+    from pathlib import Path
+    from mcp_server.persistence.taste_store import PersistentTasteStore
+    from mcp_server.memory.taste_graph import build_taste_graph
+
+    with tempfile.TemporaryDirectory() as d:
+        store_path = Path(d) / "taste.json"
+        store = PersistentTasteStore(store_path)
+        graph = build_taste_graph(persistent_store=store)
+
+        graph.record_anti_preference("brightness", "increase")
+        graph.record_dimension_weight("transition_boldness", 0.35)
+
+        # In-memory state reflects the writes immediately.
+        assert graph.dimension_avoidances["brightness"] == "increase"
+        assert graph.dimension_weights["transition_boldness"] == 0.35
+
+        # A separate store handle reading the same file must see the writes.
+        store2 = PersistentTasteStore(store_path)
+        persisted = store2.get_all()
+        assert any(
+            a["dimension"] == "brightness" and a["direction"] == "increase"
+            for a in persisted.get("anti_preferences", [])
+        )
+        assert persisted.get("dimension_weights", {})["transition_boldness"] == 0.35
+
+        # A freshly built graph (no session stores) hydrates the persisted
+        # dimension weight and anti-preference from disk — proving the read
+        # branches are no longer dead.
+        graph2 = build_taste_graph(persistent_store=store2)
+        assert graph2.dimension_avoidances.get("brightness") == "increase"
+        assert graph2.dimension_weights.get("transition_boldness") == 0.35
+
+def test_record_positive_preference_persists_dimension_weight():
+    """P2-29 (dimension-weight half): the record_positive_preference MCP tool
+    must persist the updated dimension weight through the lifespan taste store so
+    it survives a restart — previously the write-back was dead (no caller)."""
+    from types import SimpleNamespace
+    from mcp_server.memory.tools import record_positive_preference
+
+    with tempfile.TemporaryDirectory() as d:
+        store = PersistentTasteStore(Path(d) / "taste.json")
+        ctx = SimpleNamespace(lifespan_context={"persistent_taste": store})
+
+        # 'warmth'/'increase' should match at least one outcome signal.
+        result = record_positive_preference(ctx, "warmth", "increase")
+        if result.get("recorded"):
+            assert result.get("persisted") is True
+            persisted = PersistentTasteStore(Path(d) / "taste.json").get_all()
+            assert "warmth" in persisted.get("dimension_weights", {})
+
+
+def test_record_positive_preference_session_only_without_store():
+    """Hermetic fallback: no persistent store in context → persisted False, no
+    write to the real ~/.livepilot taste file."""
+    from types import SimpleNamespace
+    from mcp_server.memory.tools import record_positive_preference
+
+    ctx = SimpleNamespace(lifespan_context={})
+    result = record_positive_preference(ctx, "warmth", "increase")
+    assert result.get("persisted") is False

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastmcp import Context
 
 from ..server import mcp
@@ -14,10 +16,27 @@ from .promotion import batch_evaluate_promotions
 from .session_memory import SessionMemoryStore
 from .taste_memory import TasteMemoryStore
 
+logger = logging.getLogger(__name__)
+
 
 def _get_anti_memory(ctx: Context) -> AntiMemoryStore:
     """Get or create the session-scoped AntiMemoryStore."""
     return ctx.lifespan_context.setdefault("anti_memory", AntiMemoryStore())
+
+
+def _get_persistent_taste_store(ctx: Context):
+    """Return the persistent taste store from the live server context, or None.
+
+    Only the live server lifespan injects "persistent_taste" (the same key the
+    wonder/runtime/preview_studio tools use, so all share ONE instance); tests
+    build their own context without it, so taste tools stay session-only
+    (hermetic) there. When present, taste write-backs and reads persist across
+    restarts (P2-29).
+    """
+    try:
+        return ctx.lifespan_context.get("persistent_taste")
+    except AttributeError:
+        return None
 
 
 def _get_session_memory(ctx: Context) -> SessionMemoryStore:
@@ -43,12 +62,25 @@ def record_anti_preference(
 ) -> dict:
     """Record a user dislike for a dimension+direction. direction must be 'increase' or 'decrease'."""
     if direction not in ("increase", "decrease"):
-        return {"error": "direction must be 'increase' or 'decrease'"}
+        return {"error": "direction must be 'increase' or 'decrease'",
+                "code": "INVALID_PARAM"}
     store = _get_anti_memory(ctx)
     pref = store.record_dislike(dimension, direction)
+    # P2-29: persist to the taste store so the anti-preference survives a
+    # server restart (best-effort — the session store above is authoritative
+    # for the in-session response).
+    persistent = _get_persistent_taste_store(ctx)
+    persisted = False
+    if persistent is not None:
+        try:
+            persistent.record_anti_preference(dimension, direction)
+            persisted = True
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("persist anti_preference failed: %s", exc)
     return {
         "recorded": pref.to_dict(),
         "should_caution": store.should_caution(dimension, direction),
+        "persisted": persisted,
     }
 
 
@@ -143,7 +175,10 @@ def get_taste_graph(ctx: Context) -> dict:
 
     taste_store = _get_taste_memory(ctx)
     anti_store = _get_anti_memory(ctx)
-    graph = build_taste_graph(taste_store=taste_store, anti_store=anti_store)
+    graph = build_taste_graph(
+        taste_store=taste_store, anti_store=anti_store,
+        persistent_store=_get_persistent_taste_store(ctx),
+    )
     return graph.to_dict()
 
 
@@ -158,7 +193,10 @@ def explain_taste_inference(ctx: Context) -> dict:
 
     taste_store = _get_taste_memory(ctx)
     anti_store = _get_anti_memory(ctx)
-    graph = build_taste_graph(taste_store=taste_store, anti_store=anti_store)
+    graph = build_taste_graph(
+        taste_store=taste_store, anti_store=anti_store,
+        persistent_store=_get_persistent_taste_store(ctx),
+    )
     return graph.explain()
 
 
@@ -178,7 +216,10 @@ def rank_moves_by_taste(
 
     taste_store = _get_taste_memory(ctx)
     anti_store = _get_anti_memory(ctx)
-    graph = build_taste_graph(taste_store=taste_store, anti_store=anti_store)
+    graph = build_taste_graph(
+        taste_store=taste_store, anti_store=anti_store,
+        persistent_store=_get_persistent_taste_store(ctx),
+    )
 
     if isinstance(move_specs, str):
         import json
@@ -218,10 +259,27 @@ def record_positive_preference(
             matching_signals.append(sig_name)
     if matching_signals:
         taste_store.update_from_outcome({"signals": matching_signals})
+    # P2-29 (dimension-weight half): persist the updated dimension weight so it
+    # survives a server restart — symmetric with record_anti_preference. Without
+    # this the persisted dimension_weights hydration branch in build_taste_graph
+    # stayed dead (no production writer). Best-effort; session store is
+    # authoritative for the in-session response.
+    persisted = False
+    persistent = _get_persistent_taste_store(ctx)
+    if persistent is not None and matching_signals:
+        try:
+            for dim in taste_store.get_taste_dimensions():
+                if dim.name == dimension and dim.evidence_count > 0:
+                    persistent.record_dimension_weight(dimension, dim.value)
+                    persisted = True
+                    break
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("persist dimension_weight failed: %s", exc)
     return {
         "recorded": bool(matching_signals),
         "dimension": dimension,
         "direction": direction,
         "signals_matched": matching_signals,
         "evidence": evidence,
+        "persisted": persisted,
     }

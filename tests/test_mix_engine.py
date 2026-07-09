@@ -1,7 +1,10 @@
 """Comprehensive tests for Mix Engine V1."""
 
+import math
 import sys
 import os
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -131,6 +134,84 @@ class TestStateBuilder:
         mm = build_masking_map(None, None)
         assert len(mm.entries) == 0
         assert mm.worst_pair is None
+
+    # ── P2-25: spectral-overlap severity scaling ────────────────────
+
+    def test_masking_heuristic_labels_master_only_spectrum(self):
+        """Master-bus-only spectrum → severity_basis='role_heuristic', measured=False."""
+        roles = {0: "kick", 1: "bass"}
+        # No "tracks" key → master-only shape
+        mm = build_masking_map({"bands": {"sub": 0.9, "low": 0.7}}, roles)
+        assert len(mm.entries) > 0
+        for entry in mm.entries:
+            assert entry.measured is False
+            assert entry.severity_basis == "role_heuristic"
+        # Severity must equal the role-prior constant (e.g. kick/bass/sub = 0.7)
+        sub_entries = [e for e in mm.entries if e.overlap_band == "sub"]
+        assert sub_entries, "Expected kick/bass sub collision"
+        assert sub_entries[0].severity == pytest.approx(0.7)
+
+    def test_masking_spectral_scaling_with_per_track_data(self):
+        """Per-track spectrum: severity is scaled by actual band overlap.
+
+        Kick with high sub energy (0.9) + Bass with high sub energy (0.8):
+        overlap = sqrt(0.9 * 0.8) ≈ 0.849 → severity = 0.7 * 0.849 ≈ 0.594.
+        Must be measured=True and severity_basis='spectral_overlap'.
+        """
+        roles = {0: "kick", 1: "bass"}
+        spectrum = {
+            "tracks": {
+                "0": {"sub": 0.9, "low": 0.8, "low_mid": 0.3},
+                "1": {"sub": 0.8, "low": 0.7, "low_mid": 0.4},
+            }
+        }
+        mm = build_masking_map(spectrum, roles)
+        sub_entries = [e for e in mm.entries if e.overlap_band == "sub"]
+        assert sub_entries, "Expected kick/bass sub collision"
+        e = sub_entries[0]
+        assert e.measured is True
+        assert e.severity_basis == "spectral_overlap"
+        expected = 0.7 * math.sqrt(0.9 * 0.8)
+        assert e.severity == pytest.approx(expected, rel=1e-6)
+
+    def test_masking_eq_separated_tracks_produce_near_zero_severity(self):
+        """EQ-separated kick and bass: kick has sub energy, bass has NONE.
+
+        overlap = sqrt(0.9 * 0.0) = 0 → severity = 0.7 * 0 = 0.0.
+        The collision entry must still exist but severity is effectively zero
+        so it won't trigger the masking critic (threshold 0.4).
+        """
+        roles = {0: "kick", 1: "bass"}
+        spectrum = {
+            "tracks": {
+                "0": {"sub": 0.9, "low": 0.8},   # kick has sub energy
+                "1": {"sub": 0.0, "low": 0.0, "low_mid": 0.7},  # bass EQ'd out of sub
+            }
+        }
+        mm = build_masking_map(spectrum, roles)
+        sub_entries = [e for e in mm.entries if e.overlap_band == "sub"]
+        assert sub_entries, "Entry must still exist even when overlap is zero"
+        assert sub_entries[0].severity == pytest.approx(0.0, abs=1e-9)
+        assert sub_entries[0].measured is True
+        # Critic must NOT fire for a zero-severity entry
+        from mcp_server.mix_engine.critics import run_masking_critic
+        issues = run_masking_critic(mm)
+        sub_issues = [i for i in issues if "sub" in i.evidence]
+        assert len(sub_issues) == 0
+
+    def test_masking_per_track_missing_one_side_falls_back_to_heuristic(self):
+        """If per-track data exists for track 0 but not track 1, fall back to heuristic."""
+        roles = {0: "kick", 1: "bass"}
+        spectrum = {
+            "tracks": {
+                "0": {"sub": 0.9},
+                # track 1 absent → no data for bass
+            }
+        }
+        mm = build_masking_map(spectrum, roles)
+        for entry in mm.entries:
+            assert entry.measured is False
+            assert entry.severity_basis == "role_heuristic"
 
     def test_build_dynamics_state_normal(self):
         ds = build_dynamics_state(rms=0.1, peak=0.5)

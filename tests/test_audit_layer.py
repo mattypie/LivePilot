@@ -233,13 +233,40 @@ def test_masking_n_a_without_report():
 
 
 def test_masking_filters_for_target_track():
+    # Entries use the real MaskingEntry.to_dict() shape: float `severity` and
+    # `overlap_band` (NOT a "band" key or a "high"/"warn" string). The worst
+    # kick/bass collision has base severity 0.7, which must roll up to FAIL.
     report = {"masking": {"entries": [
-        {"track_a": 1, "track_b": 3, "band": "LOW", "severity": "high"},
-        {"track_a": 2, "track_b": 5, "band": "MID", "severity": "warn"},
+        {"track_a": 1, "track_b": 3, "overlap_band": "sub", "severity": 0.7},
+        {"track_a": 2, "track_b": 5, "overlap_band": "mid", "severity": 0.3},
     ]}}
     result = checks.check_masking(3, report)
-    assert result["severity"] == "fail"  # high severity triggers fail
+    assert result["severity"] == "fail"  # 0.7 >= 0.65 threshold triggers fail
     assert len(result["issues"]) == 1
+
+
+def test_masking_severe_collision_fails_and_names_band():
+    # Regression: a 0.7-severity collision must be FAIL (not WARN) and the
+    # detail must name the real overlap band, not "?". Previously check_masking
+    # compared the float severity against the string "high" (dead FAIL branch)
+    # and read a nonexistent "band" key (every detail said "band ?").
+    report = {"masking": {"entries": [
+        {"track_a": 0, "track_b": 4, "overlap_band": "sub", "severity": 0.7},
+    ]}}
+    result = checks.check_masking(4, report)
+    assert result["severity"] == "fail"
+    detail = result["issues"][0]["detail"]
+    assert "sub" in detail
+    assert "band ?" not in detail
+
+
+def test_masking_mild_collision_warns():
+    # A sub-threshold collision (0.3 < 0.65) stays at WARN, not FAIL.
+    report = {"masking": {"entries": [
+        {"track_a": 1, "track_b": 2, "overlap_band": "mid", "severity": 0.3},
+    ]}}
+    result = checks.check_masking(1, report)
+    assert result["severity"] == "warn"
 
 
 # ── §5.5 Modulation ──────────────────────────────────────────────────
@@ -354,6 +381,19 @@ def test_originalsimpler_is_recognized_as_instrument():
     }]
     result = checks.check_samples("hat", devices, slice_classifications=None)
     assert result["severity"] != "n/a", "OriginalSimpler must be recognized as Simpler"
+
+
+def test_check_samples_tolerates_string_volume_value():
+    """Some LOM param shapes serialize `value` as a formatted string
+    (e.g. '-12.0 dB'); check_samples must not raise on float()/:.1f — it
+    degrades gracefully and skips the numeric default-volume threshold."""
+    devices = [{
+        "class_name": "Simpler",
+        "parameters": [{"name": "Volume", "value": "-12.0 dB"}],
+    }]
+    result = checks.check_samples("pad", devices, slice_classifications=None)
+    assert result["severity"] in ("pass", "warn")
+    assert not any(i["code"] == "simpler_default_volume" for i in result["issues"])
 
 
 def test_modulation_counts_native_velocity_routings():

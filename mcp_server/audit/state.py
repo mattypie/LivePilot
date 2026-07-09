@@ -70,7 +70,11 @@ def count_wavetable_routings(ableton, track_index: int, devices: list[dict]) -> 
     """Sum non-zero mod-matrix routings across any Wavetable on the track."""
     total = 0
     for i, dev in enumerate(devices or []):
-        if dev.get("class_name") != "Wavetable":
+        # Accept both "Wavetable" (most Live versions) and "InstrumentVector"
+        # (how Ableton reports the Wavetable instrument in some builds).
+        # Param-level disambiguation (Osc 1 Pos) is enforced inside the remote
+        # script _get_wavetable guard; the audit dict only carries class_name.
+        if dev.get("class_name") not in ("Wavetable", "InstrumentVector"):
             continue
         mod = safe_call(ableton, "get_wavetable_mod_matrix", {
             "track_index": track_index,
@@ -78,7 +82,11 @@ def count_wavetable_routings(ableton, track_index: int, devices: list[dict]) -> 
         })
         if not mod:
             continue
-        entries = mod.get("matrix") or mod.get("entries") or []
+        # The remote get_wavetable_mod_matrix handler returns {"routings": [...]}
+        # (remote_script/LivePilot/devices.py). Read that real key FIRST; keep
+        # the matrix/entries aliases only as defensive fallbacks. Reading the
+        # wrong key here left this metric silently 0 against every real device.
+        entries = mod.get("routings") or mod.get("matrix") or mod.get("entries") or []
         for e in entries:
             try:
                 if abs(float(e.get("amount", 0.0))) > 0.001:

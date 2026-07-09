@@ -141,7 +141,12 @@ def test_masking_fails_on_high_severity_collision():
         "masking_report": {
             "masking": {
                 "entries": [
-                    {"track_a": 0, "track_b": 1, "band": "SUB_LOW", "severity": "high"},
+                    # Real runtime shape: get_masking_report serializes
+                    # MaskingEntry.to_dict() → float severity + "overlap_band".
+                    # (The old {"band","severity":"high"} fixture was a shape
+                    # that never occurs at runtime — check_masking's FAIL branch
+                    # was dead until the float threshold fix.)
+                    {"track_a": 0, "track_b": 1, "overlap_band": "SUB_LOW", "severity": 0.7},
                 ]
             }
         },

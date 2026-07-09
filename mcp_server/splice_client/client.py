@@ -20,7 +20,7 @@ Plan-aware gating (see `project_splice_subscription_model.md`):
     (100/day) rather than credits. `can_download_sample()` checks both
     the daily quota AND the credit floor, choosing the right budget for
     the user's actual plan.
-  - Free samples (`Sample.IsPremium == False` or `Price == 0`) bypass
+  - Free samples (`Sample.IsPremium == False`) bypass
     gating entirely — they're free under any plan.
 """
 
@@ -330,7 +330,7 @@ class SpliceGRPCClient:
             return DownloadDecision(
                 allowed=True,
                 reason=(
-                    "Sample is free (Price=0 or !IsPremium) — no credit or "
+                    "Sample is free (not premium) — no credit or "
                     "quota cost under any plan."
                 ),
                 plan_kind=(

@@ -97,20 +97,68 @@ def bind_project_store_from_session(session_info: dict) -> Optional[str]:
         logger.debug("bind_project_store_from_session: read failed: %s", exc)
         raw_threads, raw_turns = [], []
 
-    _threads = {
+    # MERGE, don't overwrite. The whole reason a lazy/late bind exists is the
+    # startup bind couldn't reach Ableton — during that window the tracker
+    # accepted open_thread()/record_turn_resolution() with no store attached,
+    # so those entries live ONLY in _threads/_turns and were never flushed. A
+    # naive reassignment of _threads/_turns from disk silently discards them
+    # (data loss). Instead: disk is the truth for anything it already holds
+    # (id-keyed), and any in-memory entry whose id is absent on disk is an
+    # unpersisted survivor we keep AND flush so the next bind sees it on disk.
+    disk_threads = {
         t["thread_id"]: CreativeThread.from_dict(t)
         for t in raw_threads
         if isinstance(t, dict) and "thread_id" in t
     }
-    _turns = [
+    unflushed_threads = [
+        thread for tid, thread in _threads.items()
+        if tid and tid not in disk_threads
+    ]
+    merged_threads = dict(disk_threads)
+    for thread in unflushed_threads:
+        merged_threads[thread.thread_id] = thread
+
+    disk_turn_ids = {
+        t["turn_id"] for t in raw_turns
+        if isinstance(t, dict) and t.get("turn_id")
+    }
+    disk_turns = [
         TurnResolution.from_dict(t)
         for t in raw_turns
         if isinstance(t, dict)
     ]
+    # Turns are append-only history: keep disk order, then append any
+    # in-memory turn whose id isn't already on disk (preserve insertion order).
+    unflushed_turns = [
+        turn for turn in _turns
+        if turn.turn_id and turn.turn_id not in disk_turn_ids
+    ]
+    merged_turns = disk_turns + unflushed_turns
+
+    _threads = merged_threads
+    _turns = merged_turns
     _project_store = store
+
+    # Persist the survivors now that a store is attached. We do this AFTER
+    # binding _project_store so a failure here doesn't leave the survivors
+    # invisible — they're already live in memory; this only writes them
+    # through to disk so a future restart/rebind keeps them.
+    for thread in unflushed_threads:
+        try:
+            store.save_thread(thread.to_dict())
+        except Exception as exc:
+            logger.debug("bind_project_store_from_session: thread flush failed: %s", exc)
+    for turn in unflushed_turns:
+        try:
+            store.save_turn(turn.to_dict())
+        except Exception as exc:
+            logger.debug("bind_project_store_from_session: turn flush failed: %s", exc)
+
     logger.info(
-        "session_continuity: bound project %s (%d threads, %d turns restored)",
+        "session_continuity: bound project %s "
+        "(%d threads, %d turns; %d threads + %d turns merged from memory)",
         new_id, len(_threads), len(_turns),
+        len(unflushed_threads), len(unflushed_turns),
     )
     return new_id
 

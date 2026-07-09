@@ -264,16 +264,31 @@ def check_masking(track_index: int, masking_report: dict | None) -> dict:
             "issues": [],
             "evidence": {"collision_count": 0},
         }
+    # MaskingEntry.severity is a float 0.0-1.0 (base 0.7 kick/bass-sub down to
+    # 0.3), and the band lives under the "overlap_band" key (MaskingEntry.to_dict
+    # via asdict). Treat >= 0.65 as a FAIL-grade collision.
+    _FAIL_THRESHOLD = 0.65
+
+    def _sev(c: dict) -> float:
+        try:
+            return float(c.get("severity", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
     issues = []
     for c in my_collisions:
-        sev = c.get("severity", "warn")
+        sev = _sev(c)
         other = c.get("track_b") if c.get("track_a") == track_index else c.get("track_a")
-        band = c.get("band") or c.get("frequency_band") or "?"
+        band = c.get("overlap_band") or "?"
         issues.append({
             "code": "masking_collision",
-            "detail": f"Frequency clash with track {other} in band {band} (severity={sev})",
+            "detail": f"Frequency clash with track {other} in band {band} (severity={sev:.2f})",
         })
-    severity = "fail" if any(c.get("severity") == "high" for c in my_collisions) else "warn"
+    severity = (
+        "fail"
+        if any(_sev(c) >= _FAIL_THRESHOLD for c in my_collisions)
+        else "warn"
+    )
     return {
         "severity": severity,
         "summary": f"{len(my_collisions)} masking collision(s) involving this track",
@@ -649,10 +664,19 @@ def check_samples(role: str, devices: list[dict], slice_classifications: list[di
     # Read Volume param if present.
     params = simpler.get("parameters", []) or []
     vol = next((p for p in params if (p.get("name") or "").lower() == "volume"), None)
-    if vol and float(vol.get("value", 0.0)) < -10.0 and role in ("pad", "lead", "bass", "vox"):
+    # `value` is normally a float, but some LOM param shapes serialize it as a
+    # formatted string (e.g. "-12.0 dB"); float() / :.1f would then raise and
+    # take down the whole audit_layer call. Convert defensively.
+    vol_db = None
+    if vol is not None:
+        try:
+            vol_db = float(vol.get("value", 0.0))
+        except (TypeError, ValueError):
+            vol_db = None
+    if vol_db is not None and vol_db < -10.0 and role in ("pad", "lead", "bass", "vox"):
         issues.append({
             "code": "simpler_default_volume",
-            "detail": f"Simpler Volume at {vol.get('value'):.1f} dB (default -12). Set to 0 for sustained roles.",
+            "detail": f"Simpler Volume at {vol_db:.1f} dB (default -12). Set to 0 for sustained roles.",
         })
     if slice_classifications:
         unclassified = sum(1 for s in slice_classifications if s.get("classification") in (None, "unknown"))
@@ -667,7 +691,7 @@ def check_samples(role: str, devices: list[dict], slice_classifications: list[di
         "summary": f"Simpler/Sampler present; {len(issues)} issue(s)",
         "issues": issues,
         "evidence": {
-            "has_volume_default": bool(vol and float(vol.get("value", 0.0)) < -10.0),
+            "has_volume_default": bool(vol_db is not None and vol_db < -10.0),
             "slice_count": len(slice_classifications) if slice_classifications else 0,
         },
     }

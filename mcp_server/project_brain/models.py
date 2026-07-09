@@ -128,6 +128,7 @@ class SectionNode:
     section_type: str = "unknown"
     energy: float = 0.0
     density: float = 0.0
+    tracks_active: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -137,6 +138,7 @@ class SectionNode:
             "section_type": self.section_type,
             "energy": self.energy,
             "density": self.density,
+            "tracks_active": list(self.tracks_active),
         }
 
 

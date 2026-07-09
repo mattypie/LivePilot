@@ -59,12 +59,32 @@ class BalanceState:
 
 @dataclass
 class MaskingEntry:
-    """A single frequency masking collision between two tracks."""
+    """A single frequency masking collision between two tracks.
+
+    Fields
+    ------
+    track_a, track_b : int
+        Track indices of the colliding pair.
+    overlap_band : str
+        Frequency band where the collision is strongest (e.g. "sub", "low").
+    severity : float
+        0–1 collision severity.  When ``measured`` is True this reflects
+        actual per-track band energy overlap; when False it is a role-pair
+        heuristic constant from the collision-rule table.
+    measured : bool
+        True  → severity was scaled by real per-track spectral data.
+        False → severity is a role-prior heuristic (no per-track spectrum).
+    severity_basis : str
+        Human-readable label for the severity origin.
+        Either "spectral_overlap" (measured) or "role_heuristic" (heuristic).
+    """
 
     track_a: int = 0
     track_b: int = 0
     overlap_band: str = ""
     severity: float = 0.0
+    measured: bool = False
+    severity_basis: str = "role_heuristic"
 
     def to_dict(self) -> dict:
         return asdict(self)

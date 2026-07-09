@@ -343,7 +343,7 @@ def _infer_section_purposes(
     # From composition analysis if available
     comp_sections = composition.get("sections", [])
     if comp_sections:
-        for sec in comp_sections:
+        for i, sec in enumerate(comp_sections):
             name = str(sec.get("name", ""))
             # BUG-B12: skip empty placeholder sections that pollute the
             # energy_arc and section_purposes list. A section with no name
@@ -360,7 +360,11 @@ def _infer_section_purposes(
                 or intent.lower() in _PAYOFF_INTENTS
             )
             sections.append(SectionPurpose(
-                section_id=sec.get("id", name),
+                # Must be UNIQUE: _build_energy_arc / detect_identity_drift key
+                # before/after energy by section_id. A section with energy>0 but
+                # no "id" and an empty name would yield "" for two distinct
+                # sections, collapsing them in the dict and dropping one's drift.
+                section_id=sec.get("id") or name.strip() or f"section_{i}",
                 label=sec.get("label", name),
                 emotional_intent=intent,
                 energy_level=sec.get("energy", 0.5),
