@@ -45,7 +45,11 @@ class MockAbletonServer:
         self._error_responses[command_type] = {"code": code, "message": message}
 
     def _accept_loop(self):
-        self._sock.settimeout(1.0)
+        # Perf batch (v1.27.3): a 1.0s poll meant teardown (closing the
+        # socket doesn't interrupt an in-flight accept() on macOS) waited
+        # up to a full tick per test — ~7s across the suite. A shorter
+        # poll keeps shutdown latency low without busy-looping.
+        self._sock.settimeout(0.05)
         while self._running:
             try:
                 client, _ = self._sock.accept()

@@ -233,3 +233,69 @@ class TestDiffFingerprint:
         for dim in ("brightness", "warmth", "bite", "softness", "instability",
                     "width", "texture_density", "movement", "polish"):
             assert dim in d
+
+
+# ── P2-22: strategy-crash logging (Drift / Meld) ─────────────────────────
+#
+# analog.py's propose_branches() logs a warning (with traceback) when a
+# strategy function raises, instead of silently swallowing the exception.
+# drift.py and meld.py used to swallow silently (`except Exception: continue`
+# with no logging) — verify they now follow the same observable pattern,
+# AND that a crashing strategy doesn't take the other strategy down with it.
+
+
+class TestDriftStrategyCrashIsLogged:
+
+    def test_crash_logged_and_other_strategy_still_returned(self, monkeypatch, caplog):
+        import mcp_server.synthesis_brain.adapters.drift as drift_module
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("synthetic crash")
+
+        monkeypatch.setattr(drift_module, "_strategy_character_blend", _boom)
+
+        profile = analyze_synth_patch(
+            device_name="Drift",
+            track_index=2,
+            device_index=0,
+            parameter_state={"Character": 0.1, "Sub Level": 0.0},
+            role_hint="lead",  # makes _strategy_filter_sweep applicable
+        )
+        with caplog.at_level("WARNING", logger="mcp_server.synthesis_brain.adapters.drift"):
+            pairs = propose_synth_branches(profile)
+
+        # The surviving strategy (filter_sweep) still produced a branch —
+        # one crashing strategy must not kill the others.
+        assert len(pairs) == 1
+        # The crash was logged, not swallowed silently.
+        assert any(
+            "crashed" in record.message.lower() or "crashed" in record.getMessage().lower()
+            for record in caplog.records
+        )
+
+
+class TestMeldStrategyCrashIsLogged:
+
+    def test_crash_logged_and_other_strategy_still_returned(self, monkeypatch, caplog):
+        import mcp_server.synthesis_brain.adapters.meld as meld_module
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("synthetic crash")
+
+        monkeypatch.setattr(meld_module, "_strategy_engine_algo_swap", _boom)
+
+        profile = analyze_synth_patch(
+            device_name="Meld",
+            track_index=3,
+            device_index=0,
+            parameter_state={"Engine 1 Algorithm": 2, "Engine 2 Algorithm": 5,
+                              "Engine 1 Level": 0.6, "Engine 2 Level": 0.4},
+        )
+        with caplog.at_level("WARNING", logger="mcp_server.synthesis_brain.adapters.meld"):
+            pairs = propose_synth_branches(profile)
+
+        # engine_mix_shift still produced a branch.
+        assert len(pairs) == 1
+        assert any(
+            "crashed" in record.getMessage().lower() for record in caplog.records
+        )

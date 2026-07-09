@@ -416,7 +416,11 @@ async def apply_full_plan(
                 # Track the index so postflight can set monitoring on them
                 result = await ableton.send_command_async(tool_name, resolved_params) or {}
                 if ok and isinstance(result, dict):
-                    track_idx = result.get("track_index")
+                    # create_midi_track/create_audio_track return {"index": N}
+                    # from the real Remote Script, not {"track_index": N} —
+                    # fall back to the legacy key for any mock that still
+                    # uses it.
+                    track_idx = result.get("index", result.get("track_index"))
                     if track_idx is not None:
                         created_track_indices.append(int(track_idx))
             elif tool_name in _FULL_PLAN_TCP_TOOLS:
@@ -811,7 +815,9 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
             return_name = (send_spec.get("return_name") or "").strip()
             value = send_spec.get("value")
             send_index = send_spec.get("send_index")
-            if return_name is None and send_index is None:
+            # return_name is always a str (post-.strip()), never None — the
+            # real "no destination given" case is an empty string.
+            if not return_name and send_index is None:
                 continue
             try:
                 value = float(value or 0.0)

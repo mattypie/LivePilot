@@ -132,8 +132,11 @@ def get_emotional_arc(ctx: Context) -> dict:
            Use when asking "how busy is this section?"
 
         2. `get_emotional_arc.tension` (this tool)
-           → narrative-arc signal weighted by harmonic instability,
-           section placement, and payoff/contrast. Use when asking
+           → narrative-arc signal weighted by harmonic instability
+           (derived per section from key-detection confidence — low
+           confidence reads as unstable — plus a bump when the mode
+           shifts from the previous section), section placement, and
+           payoff/contrast. Use when asking
            "where does the song want to go emotionally?" — tension
            can be HIGH in a sparse-but-anticipatory section (low
            density) and LOW in a busy-but-resolved section (high
@@ -190,6 +193,21 @@ def get_emotional_arc(ctx: Context) -> dict:
                 logger.debug("get_emotional_arc failed: %s", exc)
                 continue
         harmony_fields.append(hf)
+
+    # Derive a real instability signal per section — cheapest honest proxy
+    # available from what the loop above already computed:
+    #   1. Key-detection confidence: low confidence (weak/ambiguous tonal
+    #      center) reads as harmonically unstable. No key detected at all
+    #      (no notes found) falls back to a neutral 0.3, matching the
+    #      tension-curve fallback below.
+    #   2. Mode change vs the previous section: a shift from e.g. major to
+    #      minor (or vice versa) is itself a destabilizing event, so it adds
+    #      a bump on top of the confidence-derived base.
+    for hf in harmony_fields:
+        hf.instability = round(max(0.0, min(1.0, 1.0 - hf.confidence)), 3) if hf.key else 0.3
+    for prev_hf, curr_hf in zip(harmony_fields, harmony_fields[1:]):
+        if prev_hf.mode and curr_hf.mode and prev_hf.mode != curr_hf.mode:
+            curr_hf.instability = round(min(1.0, curr_hf.instability + 0.15), 3)
 
     issues = engine.run_emotional_arc_critic(sections, harmony_fields)
 

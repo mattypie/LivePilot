@@ -89,7 +89,6 @@ def _probe_flucoma_package() -> bool:
             externals = package_dir / "externals"
             if externals.exists() and any(externals.glob("fluid.*")):
                 return True
-            return True
         return False
     except Exception as exc:  # noqa: BLE001
         logger.debug("_probe_flucoma_package failed: %s", exc)

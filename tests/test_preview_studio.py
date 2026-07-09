@@ -269,8 +269,15 @@ def test_render_variant_uses_lifespan_spectral_cache_for_audible_preview(monkeyp
             backend="remote_command", result={"ok": True}, error="",
         )]
 
+    async def _fake_sleep(_seconds):
+        return None
+
     monkeypatch.setattr(execution_router, "execute_plan_steps_async", _fake_exec_async)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    # Perf batch (v1.27.3): render_preview_variant awaits asyncio.sleep(play_seconds)
+    # (up to 8s) for the audible-preview window — the "time.sleep" patch above
+    # doesn't touch it since the code path is async. Zero-delay it here.
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
 
     ctx = SimpleNamespace(lifespan_context={"ableton": _Ableton(), "spectral": cache})
     result = asyncio.run(render_preview_variant(ctx, set_id=ps.set_id, variant_id=variant_id, bars=2))
@@ -324,8 +331,14 @@ def test_render_preview_variant_captures_audible_before_undo(monkeypatch):
             backend="remote_command", result={"ok": True}, error="",
         )]
 
+    async def _fake_sleep(_seconds):
+        return None
+
     monkeypatch.setattr(execution_router, "execute_plan_steps_async", _fake_exec_async)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    # Perf batch (v1.27.3): see comment in the sibling test above — this
+    # test's audible-preview window is also a real asyncio.sleep.
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
 
     ctx = SimpleNamespace(lifespan_context={"ableton": _Ableton(), "spectral": cache})
     result = asyncio.run(render_preview_variant(ctx, set_id=ps.set_id, variant_id=variant_id, bars=2))

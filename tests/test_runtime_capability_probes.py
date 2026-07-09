@@ -109,6 +109,64 @@ def test_web_probe_helper_swallows_exceptions(monkeypatch):
     assert runtime_tools._probe_web(timeout=0.01) is False
 
 
+# ── P3-7: _probe_flucoma_package must not return True for ANY existing dir ──
+
+
+def test_probe_flucoma_package_false_when_dir_exists_but_empty(monkeypatch, tmp_path):
+    """A package dir that exists but has neither package-info.json nor
+    externals/fluid.* must NOT count as "installed".
+
+    Pre-fix, the loop's final `return True` fired unconditionally for any
+    existing directory (even an empty one), so this reproduced a false
+    positive: a leftover/empty FluidCorpusManipulation folder reported
+    FluCoMa as installed.
+    """
+    from mcp_server.runtime import tools as runtime_tools
+
+    empty_dir = tmp_path / "FluidCorpusManipulation"
+    empty_dir.mkdir()
+
+    monkeypatch.setattr(runtime_tools, "_flucoma_package_dirs", lambda: [empty_dir])
+
+    assert runtime_tools._probe_flucoma_package() is False
+
+
+def test_probe_flucoma_package_true_with_package_info(monkeypatch, tmp_path):
+    from mcp_server.runtime import tools as runtime_tools
+
+    pkg_dir = tmp_path / "FluidCorpusManipulation"
+    pkg_dir.mkdir()
+    (pkg_dir / "package-info.json").write_text("{}")
+
+    monkeypatch.setattr(runtime_tools, "_flucoma_package_dirs", lambda: [pkg_dir])
+
+    assert runtime_tools._probe_flucoma_package() is True
+
+
+def test_probe_flucoma_package_true_with_externals(monkeypatch, tmp_path):
+    from mcp_server.runtime import tools as runtime_tools
+
+    pkg_dir = tmp_path / "FluidCorpusManipulation"
+    externals = pkg_dir / "externals"
+    externals.mkdir(parents=True)
+    (externals / "fluid.bufinfo.mxo").touch()
+
+    monkeypatch.setattr(runtime_tools, "_flucoma_package_dirs", lambda: [pkg_dir])
+
+    assert runtime_tools._probe_flucoma_package() is True
+
+
+def test_probe_flucoma_package_false_when_no_dirs_exist(monkeypatch, tmp_path):
+    from mcp_server.runtime import tools as runtime_tools
+
+    monkeypatch.setattr(
+        runtime_tools, "_flucoma_package_dirs",
+        lambda: [tmp_path / "does_not_exist"],
+    )
+
+    assert runtime_tools._probe_flucoma_package() is False
+
+
 # ── Task B2: flucoma probe ──────────────────────────────────────────────
 
 

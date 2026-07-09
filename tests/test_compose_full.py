@@ -479,6 +479,35 @@ def test_apply_full_plan_reports_per_step_outcomes():
     assert outcomes[1]["role"] == "drums"
 
 
+def test_apply_full_plan_postflight_monitors_newly_created_track():
+    """P3-17: create_midi_track/create_audio_track return {"index": N} from
+    the real Remote Script, NOT {"track_index": N}. The walker used to read
+    result.get("track_index") only, so created_track_indices stayed empty
+    and postflight's per-track monitoring pass (BUG-FULL-MODE-17) silently
+    never ran for any track created through this deprecated apply path."""
+    from mcp_server.composer.tools import _apply_full_plan
+
+    fake = _FakeAbletonFull(fresh_default_track_count=0)
+    ctx = _FakeCtxFull(fake)
+
+    plan_response = {"plan": [
+        {"step_id": "track_0", "tool": "create_midi_track",
+         "params": {"index": 0}, "description": "Create track 0", "role": "drums"},
+    ]}
+    result = asyncio.run(_apply_full_plan(ctx, plan_response))
+
+    assert result["steps_failed"] == 0
+    # The created track must have been picked up and handed to postflight's
+    # monitoring pass — tracks_set == 1, not 0.
+    assert result["postflight"]["tracks_set"] == 1, (
+        f"Expected the created track to be monitored post-flight, got "
+        f"postflight={result['postflight']!r}"
+    )
+    monitoring_calls = [c for c in fake.calls if c[0] == "set_track_input_monitoring"]
+    assert len(monitoring_calls) == 1
+    assert monitoring_calls[0][1]["track_index"] == 0
+
+
 def test_apply_full_plan_handles_unresolvable_from_step_gracefully():
     """A bad $from_step ref should fail that step but NOT abort the walk."""
     from mcp_server.composer.tools import _apply_full_plan

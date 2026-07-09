@@ -419,6 +419,37 @@ async def test_full_apply_v2_sets_sends_per_layer():
 
 
 @pytest.mark.asyncio
+async def test_full_apply_v2_empty_send_spec_is_skipped_silently():
+    """P3-17 dead-code fix: a send entry with neither return_name nor
+    send_index used to fall through to the "return track not found" error
+    branch (the `return_name is None` early-continue guard was dead code —
+    return_name is always a str post-.strip(), never None). It must now be
+    skipped silently instead of producing a phantom "return track not
+    found" error for a send nobody actually asked to resolve."""
+    ctx = _mock_ctx_recording_with_insert_device()
+    plan = {
+        "scope": "full",
+        "form": [{"name": "intro", "start_bar": 0, "bars": 4}],
+        "tracks": [{
+            "role": "pad",
+            "instrument": {"uri": "query:Synths#Wavetable"},
+            "sends": [{"value": 0.35}],  # no return_name, no send_index
+            "variants": [{"id": "v1", "notes": [{"pitch": 60, "start_time": 0, "duration": 4, "velocity": 70}]}],
+            "arrangement_clips": [{"section_index": 0, "variant_id": "v1", "loop_length": 4}],
+        }],
+        "events": [],
+    }
+    result = await apply_full_plan_v2(ctx, plan)
+    cmds = [c[0] for c in ctx.lifespan_context["ableton"]._calls]
+    assert "set_track_send" not in cmds
+    assert result["status"] == "ok"
+    assert not any(e.get("phase", "").startswith("send_") for e in result["errors"]), (
+        f"Empty send spec should be skipped silently, not recorded as a "
+        f"'return track not found' error: {result['errors']!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_full_apply_v2_no_effects_field_no_inserts():
     """Tracks without an effects array don't trigger any insert_device calls
     beyond what the instrument loads."""

@@ -208,20 +208,46 @@ def _arrangement_steps(
     layer: LayerSpec,
     sections: list[dict],
 ) -> list[dict]:
-    """Emit the full arrangement sequence for a layer.
+    """Emit the Session-View source-clip scaffold for a layer.
 
     For each layer that appears in at least one section, we emit:
 
       1. create_clip — a 1-bar MIDI clip in session slot 0 (the source)
       2. add_notes   — a single C3 trigger note so Simpler actually sounds
-      3. create_arrangement_clip (×N) — one per section the layer is in,
-         tiling the 1-bar source across each section's bar count
 
-    The trigger-clip-plus-tile approach is intentionally minimal: Simpler
-    in classic mode plays the full sample on every note, so a single C3
-    at bar 0 is enough for a playable baseline. The suggest_sample_technique
-    step elsewhere in the plan produces a recipe the agent can use later
-    to replace the trigger pattern with something more musical.
+    The trigger-clip approach is intentionally minimal: Simpler in classic
+    mode plays the full sample on every note, so a single C3 at bar 0 is
+    enough for a playable, auditionable baseline in Session View. The
+    suggest_sample_technique step elsewhere in the plan produces a recipe
+    the agent can use later to replace the trigger pattern with something
+    more musical.
+
+    BUG-FULL-MODE-18 (rescoped): this used to also emit one
+    `create_arrangement_clip` per section, tiling the SAME 1-bar/single-note
+    source across every section (intro/build/drop/breakdown/outro all play
+    the identical loop). That isn't arrangement — it's pattern
+    multiplication dressed up as one, and it's worse than not placing
+    anything at all because it *looks* like a finished arrangement to a
+    caller inspecting `plan`. `ComposerEngine` is a pure-computation engine
+    with no per-section creative content generation (no LLM in the loop,
+    no per-section note variation) — that capability lives in the
+    agent-designed `apply_full_plan_v2` variant-slot system
+    (`composer/full/apply.py`), which real callers of `compose_full_apply`
+    already use instead of this deterministic engine (its own docstring
+    says as much: "Replaces the deterministic engine path that was prone
+    to flat single-pattern arrangements (BUG-FULL-MODE-18)").
+    `ComposerEngine.compose()` is reachable through a second path though —
+    `commit_experiment` → `escalate_composer_branch` — which has no agent
+    turn to design real per-section variants. Porting the variant-slot
+    system here would require synthesizing per-section musical content
+    from nothing, which is out of scope for a mechanical renumbering/
+    dead-code fix and would just relocate the same static content into
+    more slots without solving the actual "flat" complaint. So: this
+    engine now emits ONLY the Session-View scaffold (source clip + track),
+    honestly leaving Arrangement placement undone rather than faking it.
+    Callers that need real per-section arrangement variation should use
+    `compose_full_apply` (or fall back to the branch-hypothesis scaffold
+    plan, which never claimed arrangement placement in the first place).
     """
     active_sections = [s for s in sections if s["name"] in layer.sections]
     if not active_sections:
@@ -272,27 +298,6 @@ def _arrangement_steps(
         "description": f"Add C3 trigger note to {layer.role} source clip",
         "role": layer.role,
     })
-
-    # 3. One arrangement clip per section this layer appears in
-    for section in active_sections:
-        start_bar = section["start_bar"]
-        bar_count = section["bars"]
-        steps.append({
-            "tool": "create_arrangement_clip",
-            "params": {
-                "track_index": track_index,
-                "clip_slot_index": SOURCE_SLOT,
-                "start_time": float(start_bar * 4.0),       # bars → beats
-                "length": float(bar_count * 4.0),
-                "loop_length": SOURCE_BEATS,                # tile 1-bar source
-            },
-            "description": (
-                f"Arrange {layer.role} into '{section['name']}' "
-                f"(bar {start_bar}, {bar_count} bars)"
-            ),
-            "role": layer.role,
-            "section": section["name"],
-        })
 
     return steps
 
@@ -354,9 +359,18 @@ class ComposerEngine:
         plan.append(_step_set_tempo(intent.tempo))
 
         # Step 2: Per-layer build, resolving samples at plan time
+        #
+        # BUG-FULL-MODE-15: track_index used to be `layer_idx` — the layer's
+        # position in the ORIGINAL (pre-drop) layer list. If an earlier layer
+        # dropped as unresolved (no continue happened for it, so no track was
+        # ever created for that index), later layers still emitted their
+        # stale original index — e.g. layers 0,3,4 survive out of 0..4, and
+        # `create_midi_track(index=3)` fails because only 1 track exists.
+        # `next_track_index` instead counts only ACTUAL track creations, so
+        # surviving layers get contiguous indices (0, 1, 2, ...) matching
+        # the tracks that really get created.
+        next_track_index = 0
         for layer_idx, layer in enumerate(layers):
-            track_index = layer_idx
-
             file_path, source = await resolve_sample_for_layer(
                 layer,
                 search_roots=search_roots,
@@ -370,6 +384,9 @@ class ComposerEngine:
                     f"(query: {layer.search_query!r}). Dropped from plan."
                 )
                 continue
+
+            track_index = next_track_index
+            next_track_index += 1
 
             result.resolved_samples[layer.role] = {"path": file_path, "source": source}
 
@@ -386,6 +403,23 @@ class ComposerEngine:
             plan.extend(_processing_steps_with_binding(track_index, layer, layer_idx))
             plan.extend(_mix_steps(track_index, layer))
             plan.extend(_arrangement_steps(track_index, layer, sections))
+
+        # BUG-FULL-MODE-18 (rescoped): this engine only emits a Session-View
+        # scaffold per layer (source clip + trigger note) — it does not
+        # place anything in Arrangement, since it has no per-section
+        # creative content to place. Flag this once so callers (e.g.
+        # escalate_composer_branch) don't mistake `plan` for a finished
+        # arrangement. Real per-section arrangement variation lives in the
+        # agent-designed apply_full_plan_v2 flow (compose_full_apply).
+        if layers:
+            result.warnings.append(
+                "This scaffold places one Session-View source clip per "
+                "resolved layer and does not write anything to Arrangement "
+                "View — per-section arrangement variation is intentionally "
+                "out of scope for this deterministic engine. Use "
+                "compose_full_apply's agent-designed variant plan for real "
+                "per-section arrangement content."
+            )
 
         result.plan = plan
         return result

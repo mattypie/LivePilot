@@ -1882,11 +1882,25 @@ up to 3-5 times with 200ms gaps) before returning success.
 Usually succeeds on retry.
 
 
-### BUG-FULL-MODE-15 · `🔴 open` · Planner emits stale track indices when layers drop as unresolved → `INDEX_ERROR` cascade
+### BUG-FULL-MODE-15 · `🟢 fixed` · Planner emits stale track indices when layers drop as unresolved → `INDEX_ERROR` cascade
 
-**Reproducer:** When 2 of 5 layers drop as unresolved (e.g. bass + lead),
-the remaining 3 layers (drums, pad, texture) still emit their
-**original** track indices in `create_midi_track(index=N)` steps:
+**Status:** the original reproducer (`compose_full_apply`) no longer hits
+this defect — that tool now delegates to `apply_full_plan_v2`, whose
+agent-designed variant-slot plan either supplies `track_index` explicitly
+or omits it entirely (server records the actual creation index; see
+`tests/composer/full/test_no_index_cascade.py`), so there is no
+renumbering surface left on that path.
+
+The same defect was still live on a second, narrower path:
+`commit_experiment` → `escalate_composer_branch` →
+`ComposerEngine.compose()` (`mcp_server/composer/full/engine.py`) — the
+deterministic scaffold engine with no agent design step. Fixed there.
+
+**Reproducer (rescoped):** call `escalate_composer_branch` on a committed
+composer branch whose intent resolves 5 layers where 2 (e.g. bass + lead)
+drop as unresolved during sample resolution. Pre-fix, the remaining 3
+layers (drums, pad, texture) still emitted their **original** track
+indices in `create_midi_track(index=N)` steps:
 ```json
 {"tool": "create_midi_track", "params": {"index": 0}, "role": "drums"}    # OK
 {"tool": "create_midi_track", "params": {"index": 3}, "role": "pad"}      # FAILS
@@ -1896,22 +1910,18 @@ After drums creates track 0, the session has 1 track. `create_midi_track(index=3
 errors with `INDEX_ERROR Track index 3 out of range (0..1)`. All
 subsequent steps for pad + texture cascade to failure.
 
-**Root cause:** `mcp_server/composer/engine.py` builds the plan in two
-passes:
-1. Build the layers list (some get filtered out as unresolved during
-   sample resolution)
-2. Generate steps with track indices based on each layer's **original**
-   position in `_select_roles()` output
+**Root cause:** `ComposerEngine.compose()` set `track_index = layer_idx` —
+each layer's position in the **original** (pre-drop) layer list — before
+checking whether that layer's sample resolved. When a layer dropped as
+unresolved (`continue`), no track was ever created for its index, so
+later layers' indices were stale and non-contiguous (0, 3, 4 instead of
+0, 1, 2).
 
-When unresolved layers are dropped between passes 1 and 2, the
-remaining layers' indices are stale (non-contiguous: 0, 3, 4 instead
-of 0, 1, 2).
-
-**Suggested fix:** After unresolved layers are filtered out, re-number
-the surviving layers' track indices contiguously from 0. The
-arrangement clip references and `$from_step` IDs stay layer-scoped so
-they don't need updating; only the `create_midi_track(index=N)` and
-the per-layer `track_index` arguments need compaction.
+**Fix landed:** a separate counter (`next_track_index`) increments only
+when a layer's sample actually resolves and a track step is emitted, so
+surviving layers always get contiguous indices (0, 1, 2, ...) matching
+the tracks that really get created. Covered by
+`tests/composer/full/test_engine_track_index_renumber.py`.
 
 
 ### BUG-FULL-MODE-16 · `🟢 fixed (v1.24)` · `_score_candidate` over-rejects `synth_bass_*.wav` in bass slot
@@ -2003,108 +2013,82 @@ each track's arm button in Ableton's Arrangement view, OR call
 `back_to_arranger` MCP tool. Audio plays from the next playback start.
 
 
-### BUG-FULL-MODE-18 · `🔴 open` · Composition mode emits flat single-pattern arrangements — every section is identical loop multiplication
+### BUG-FULL-MODE-18 · `🟢 fixed (rescoped)` · Composition mode emits flat single-pattern arrangements — every section is identical loop multiplication
 
-**Reproducer:** `compose("...", mode="full")` on any prompt.
-`mcp_server/composer/engine.py` around line 246 generates ONE source
-clip per role with a single trigger note (pitch 60, full clip
-length), then emits N `create_arrangement_clip(loop_length=4)` steps
-that tile that single clip across every section it touches:
+**Status:** the original reproducer (`compose("...", mode="full")` →
+`compose_full_apply`) no longer hits this defect. That path now runs
+Option A from the original design discussion below: the agent designs a
+`variants` list per track (distinct note content per variant id) plus
+`arrangement_clips` that reference `section_index` + `variant_id`, and
+`apply_full_plan_v2` creates one Session-View slot per variant instead of
+tiling a single slot everywhere (`mcp_server/composer/full/apply.py`).
+Sample-swap, section-aware note variation, and multi-slot auditioning all
+work through that path today.
 
-```python
-# engine.py:235  — ONE source clip per layer, ONE trigger note
-SOURCE_SLOT = 0; SOURCE_BEATS = 4.0
-... add_notes(notes=[{pitch: 60, start_time: 0, duration: 4, velocity: 100}])
+The same symptom was still live on a second, narrower path with no agent
+design step: `commit_experiment` → `escalate_composer_branch` →
+`ComposerEngine.compose()` (`mcp_server/composer/full/engine.py`).
 
-# engine.py:277  — every section gets the same source slot, tiled
-for section in active_sections:
-    create_arrangement_clip(clip_slot_index=SOURCE_SLOT, loop_length=SOURCE_BEATS)
-```
+**Reproducer (rescoped):** call `escalate_composer_branch` on a committed
+composer branch. `ComposerEngine.compose()`'s `_arrangement_steps`
+generated ONE source clip per role with a single trigger note (pitch 60,
+full clip length), then emitted N `create_arrangement_clip(loop_length=4)`
+steps tiling that single clip across every section it touches — every
+section (intro / build / drop / breakdown / outro) played the same 4-beat
+loop repeated. No per-section variation, no fills, no sample swaps.
 
-Result: every section (intro / build / drop / breakdown / outro)
-plays the **same 4-beat loop** repeated. No per-section variation,
-no velocity automation, no fills, no drop/comeback contrast, no
-sample swaps for sample-trigger layers (drums/pad/texture). This is
-not arrangement — it is pattern multiplication.
+**Why this path can't just reuse the Option A fix:** the agent-designed
+variant system in `apply_full_plan_v2` depends on an LLM turn supplying
+concrete per-section note content for each variant. `ComposerEngine` is
+explicitly a pure-computation engine with no agent design step in the
+loop (see its module docstring) — porting the variant-slot *mechanism*
+here without a source of real per-section content would only relocate
+the same static trigger note into more slots, which doesn't fix the
+"flat" complaint, just hides it behind more Session-View clutter.
 
-**Comparison to `compose_fast_apply`:** Fast mode delegates per-
-section MIDI design to the LLM in a two-phase creative flow, so each
-section gets its own notes / velocities / variations. Full mode is
-mechanically inferior in this dimension despite being the supposed
-"rich" composition path.
+**Fix landed:** `ComposerEngine.compose()` now emits only the honest
+Session-View scaffold per layer (one source clip + trigger note) and
+does **not** write anything to Arrangement View — it no longer pretends
+to have designed a per-section arrangement it has no content for. A
+warning in `CompositionResult.warnings` tells callers to use
+`compose_full_apply`'s agent-designed variant plan for real per-section
+arrangement content. This matches the documented fallback convention in
+`escalate_composer_branch` (falling back to the scaffold plan when the
+full pipeline can't produce something better) instead of shipping a plan
+that inspection would mistake for a finished arrangement. Covered by
+`tests/composer/full/test_engine_track_index_renumber.py`.
 
-**Root cause — missing data model:** The `Layer` dataclass has no
-representation for per-section variants. `_emit_steps_for_layer`
-loops over sections but always references `SOURCE_SLOT = 0`. There
-is no slot-2 build pattern, slot-3 fill, etc. — and no per-section
-mapping from section_name → variant_id.
-
-**Suggested architectural fix (data model first):** Three options to
-weigh during brainstorm:
-- **Option A — Multiple source-clip slots per layer.** Layer gains a
-  `variants: dict[str, NoteList]` field (keys: `main`, `build`,
-  `fill`, `breakdown`). Engine emits one source clip per variant
-  (slots 0..N), then per-section `create_arrangement_clip` references
-  `clip_slot_index = variant_for_section(section_name)`. Most
-  Ableton-idiomatic; user can audition variants in Session view.
-- **Option B — Single source clip + per-section MIDI envelope
-  automation.** Keep one source clip but layer velocity / filter /
-  pitch envelopes that differ across sections via
-  `set_arrangement_automation`. Cheap on track count but doesn't
-  solve sample-swap need (drums can't swap their underlying sample
-  via automation).
-- **Option C — Section-specific note arrays inline in plan.** Plan
-  contains `section_notes: dict[section_name, list[NoteDict]]` and
-  engine emits `add_notes(track_index=N, clip_index=section_idx)`
-  per section as full arrangement clips, no source-clip reuse. More
-  arrangement clips but no per-section view-state in Session.
-
-Option A is the leading candidate because it (a) carries sample-
-swap support natively (each variant slot can be loaded with a
-different sample for drums/pad/texture layers), (b) stays
-deterministic across `compose()` calls, (c) keeps Session view
-useful for auditioning variants. Option B alone fails the sample-
-swap requirement.
-
-**Section-aware variation must include:**
-- Bass: octave-jumps in Build sections, root-only in Breakdown
-- Drums: sparser hits in Breakdown, fills at section endings
-  (last 2 bars), per-section sample swaps allowed
-- Pad / texture: filter-cutoff opening across Build, closing in
-  Breakdown
-- Velocity: rising profile across Build, dropping across Breakdown
-- Section-end fills: bar `bars-1` to `bars-0` of any section ≥8
-  bars long should diverge from the main pattern
-
-**Implementation surface:** ~150 lines across
-`mcp_server/composer/engine.py` (variant emission + per-section
-mapping) and `mcp_server/composer/layer_planner.py` (variant
-generation per role). Tests must verify (a) at least 2 distinct
-clip slots per non-static layer, (b) per-section
-`clip_slot_index` is not constant across all sections, (c) drum-
-layer variant slots can carry different sample paths.
-
-**Sequencing:** This is the priority blocker — full-mode output is
-not useful as an arrangement engine until #18 is fixed. Address
-before #17, #16, #15, #14.
+**Original design discussion (superseded for `compose_full_apply`, kept
+for context on the `ComposerEngine` gap):** three options were weighed —
+(A) multiple source-clip slots per layer with per-section variant
+mapping (chosen, implemented as the `apply_full_plan_v2` variant-slot
+system); (B) single source clip + per-section automation envelopes
+(rejected — no sample-swap support); (C) section-specific note arrays
+inline in the plan with no source-clip reuse. Option A shipped for the
+agent-designed path; it does not apply to `ComposerEngine` since that
+engine has no per-section content to place in the first place.
 
 
 ### Cross-cutting impact
 
-Open bugs in this section compound. Updated priority order after
-2026-05-01 live test:
+Bugs in this section compound. Priority order from the 2026-05-01 live
+test, with current status:
 
-1. **#18 (flat single-pattern arrangements)** — blocks any meaningful
-   demo of full mode. Architectural data-model change.
-2. **#17 (manual arm required)** — once #18 produces real
-   arrangements, audio still won't play without UI intervention.
+1. **#18 (flat single-pattern arrangements)** — 🟢 fixed for
+   `compose_full_apply` (agent-designed variant-slot plan); rescoped +
+   fixed for the `escalate_composer_branch` scaffold path (honest
+   Session-View-only scaffold instead of faked arrangement placement).
+2. **#17 (manual arm required)** — 🔴 still open. Once #18 produces
+   real arrangements, audio still won't play without UI intervention.
    Likely a single property fix.
-3. **#16 (`synth_bass_*` over-rejection)** — unblocks bass + lead
-   resolution.
-4. **#15 (stale track indices on layer drop)** — eliminates index
-   cascade when ANY layer drops.
-5. **#14 (bridge handshake race)** — eliminates intermittent
-   first-load failure after pre-flight.
+3. **#16 (`synth_bass_*` over-rejection)** — 🟢 fixed (v1.24). Unblocked
+   bass + lead resolution.
+4. **#15 (stale track indices on layer drop)** — 🟢 fixed. Eliminated
+   for `compose_full_apply` (no renumbering surface in the v2 flow) and
+   for `escalate_composer_branch` (contiguous renumbering in
+   `ComposerEngine.compose()`).
+5. **#14 (bridge handshake race)** — 🔴 still open. Eliminating this
+   removes intermittent first-load failure after pre-flight.
 
 ---
 

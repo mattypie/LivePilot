@@ -207,8 +207,6 @@ class SpliceSource:
             if key:
                 # Normalize: user might pass "Cm" or "C#", Splice stores "c" or "c#"
                 # Strip minor suffix for comparison — Splice uses chord_type column
-                key_normalized = key.lower().rstrip("m").rstrip("inor")
-                # But proper suffix removal:
                 k = key.lower()
                 for suffix in ("minor", "min"):
                     if k.endswith(suffix):
