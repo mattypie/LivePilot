@@ -224,7 +224,11 @@ async def run_branch_async(
     analyze_mix) are skipped in the apply pass — they're used for snapshot
     capture separately.
     """
-    from ..runtime.execution_router import execute_plan_steps_async, filter_apply_steps
+    from ..runtime.execution_router import (
+        execute_plan_steps_async,
+        filter_apply_steps,
+        undo_remote_steps,
+    )
 
     branch.status = "running"
     branch.compiled_plan = compiled_plan
@@ -257,24 +261,13 @@ async def run_branch_async(
     ]
 
     steps_executed = sum(1 for r in exec_results if r.ok)
-    # Only remote_command steps land on Ableton's linear undo stack. Bridge
-    # (M4L/OSC) and mcp_tool mutations do NOT, so issuing one `undo` per
-    # successful step over-undoes and walks back unrelated prior user edits.
-    # Count undos from remote_command successes alone.
-    undo_count = sum(
-        1 for r in exec_results if r.ok and r.backend == "remote_command"
-    )
     branch.executed_at_ms = int(time.time() * 1000)
     branch.after_snapshot = await asyncio.to_thread(capture_fn)
 
-    # Undo only the remote_command steps back to checkpoint. Undo is itself a
-    # remote_command, routed through the normal ableton.send_command path.
-    for _ in range(undo_count):
-        try:
-            await ableton.send_command_async("undo", {})
-        except Exception as exc:
-            logger.debug("run_branch_async failed: %s", exc)
-            break
+    # Undo only the remote_command steps back to checkpoint (bridge/mcp_tool
+    # mutations don't land on Ableton's linear undo stack — see
+    # undo_remote_steps' docstring).
+    await undo_remote_steps(ableton, exec_results)
 
     # A branch is "evaluated" only if it actually applied at least one step.
     # If every step failed, mark it "failed" — this is the truth-release

@@ -543,7 +543,11 @@ async def render_preview_variant(
         plan = variant.compiled_plan
         steps = plan if isinstance(plan, list) else plan.get("steps", [])
 
-        from ..runtime.execution_router import execute_plan_steps_async, filter_apply_steps
+        from ..runtime.execution_router import (
+            execute_plan_steps_async,
+            filter_apply_steps,
+            undo_remote_steps,
+        )
 
         # Read-only verification steps (meters/spectrum/info) don't create undo
         # points in Ableton — counting them and then undoing walks back earlier
@@ -551,7 +555,7 @@ async def render_preview_variant(
         apply_steps = filter_apply_steps(steps)
 
         applied_count = 0
-        undo_count = 0
+        exec_results: list = []
         playback_started = False
         preview_mode = "metadata_only_preview"
         spectral_before: Optional[dict] = None
@@ -575,13 +579,6 @@ async def render_preview_variant(
                 ctx=ctx,
             )
             applied_count = sum(1 for r in exec_results if r.ok)
-            # Only remote_command steps land on Ableton's linear undo stack.
-            # Bridge (M4L/OSC) and mcp_tool steps do NOT, so counting them and
-            # then issuing that many `undo`s walks back unrelated prior user
-            # edits. Mirror the experiment/engine.py:251 fix.
-            undo_count = sum(
-                1 for r in exec_results if r.ok and r.backend == "remote_command"
-            )
             if applied_count == 0 and apply_steps:
                 return {
                     "error": "Variant failed to apply any steps",
@@ -634,12 +631,11 @@ async def render_preview_variant(
                 except Exception as exc:
                     logger.debug("render_preview_variant failed: %s", exc)
 
-            for _ in range(undo_count):
-                try:
-                    await ableton.send_command_async("undo")
-                except Exception as exc:
-                    logger.debug("render_preview_variant failed: %s", exc)
-                    break
+            # Only remote_command steps land on Ableton's linear undo stack.
+            # Bridge (M4L/OSC) and mcp_tool steps do NOT, so counting them and
+            # then issuing that many `undo`s walks back unrelated prior user
+            # edits — undo_remote_steps filters to remote_command successes.
+            await undo_remote_steps(ableton, exec_results)
 
         variant.status = "rendered"
         variant.preview_mode = preview_mode

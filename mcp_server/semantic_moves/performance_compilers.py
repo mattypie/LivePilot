@@ -19,21 +19,33 @@ def _compile_recover_energy(move: SemanticMove, kernel: dict) -> CompiledPlan:
     drum_tracks = resolvers.find_tracks_by_role(kernel, ["drums", "percussion"])
     bass_tracks = resolvers.find_tracks_by_role(kernel, ["bass"])
 
+    # RELATIVE nudge (P2-21 pattern, ported from resolvers.compile_relative_volume
+    # / mix_compilers.py): "recover" means push UP from wherever the track
+    # already sits, not overwrite it with a flat absolute level — a drum bus
+    # already sitting hot must not get pulled DOWN to 0.70. Live-set-safe:
+    # small +12% nudge, capped just above the historical fallback so a
+    # recovering track lands in the same ballpark it always did.
     for dt in drum_tracks[:1]:
+        target = resolvers.compile_relative_volume(
+            dt.get("volume"), 12, cap=0.78, fallback=0.70
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": dt["index"], "volume": 0.70},
-            description=f"Restore {dt['name']} to 0.70 for energy recovery",
+            params={"track_index": dt["index"], "volume": target},
+            description=f"Restore {dt['name']} to {target:.2f} for energy recovery",
         ))
-        descriptions.append(f"Restore {dt['name']} to 0.70")
+        descriptions.append(f"Restore {dt['name']} to {target:.2f}")
 
     for bt in bass_tracks[:1]:
+        target = resolvers.compile_relative_volume(
+            bt.get("volume"), 12, cap=0.68, fallback=0.60
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": bt["index"], "volume": 0.60},
-            description=f"Restore {bt['name']} to 0.60",
+            params={"track_index": bt["index"], "volume": target},
+            description=f"Restore {bt['name']} to {target:.2f}",
         ))
-        descriptions.append(f"Restore {bt['name']} to 0.60")
+        descriptions.append(f"Restore {bt['name']} to {target:.2f}")
 
     # Pull reverb back to tighten
     pad_tracks = resolvers.find_tracks_by_role(kernel, ["pad", "chords"])
@@ -69,13 +81,19 @@ def _compile_decompress_tension(move: SemanticMove, kernel: dict) -> CompiledPla
     lead_tracks = resolvers.find_tracks_by_role(kernel, ["lead", "chords"])
     pad_tracks = resolvers.find_tracks_by_role(kernel, ["pad"])
 
+    # RELATIVE nudge (P2-21 pattern) — "decompress" means pull DOWN from the
+    # current level, floored so an already-quiet lead doesn't get pulled
+    # toward silence. Small -12% nudge, live-set-safe.
     for lt in lead_tracks[:2]:
+        target = resolvers.compile_relative_volume(
+            lt.get("volume"), -12, floor=0.20, fallback=0.35
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": lt["index"], "volume": 0.35},
-            description=f"Pull {lt['name']} to 0.35 for decompression",
+            params={"track_index": lt["index"], "volume": target},
+            description=f"Pull {lt['name']} to {target:.2f} for decompression",
         ))
-        descriptions.append(f"Pull {lt['name']} to 0.35")
+        descriptions.append(f"Pull {lt['name']} to {target:.2f}")
 
     for pt in pad_tracks[:1]:
         steps.append(CompiledStep(
@@ -121,7 +139,9 @@ def _compile_safe_spotlight(move: SemanticMove, kernel: dict) -> CompiledPlan:
     spotlight_idx = spotlight.get("index", 0)
     spotlight_name = spotlight.get("name", f"Track {spotlight_idx}")
 
-    # Pull non-spotlight audio tracks
+    # Pull non-spotlight audio tracks — RELATIVE nudge (P2-21 pattern),
+    # floored so an already-quiet background track doesn't get pulled
+    # toward silence.
     for track in all_tracks:
         idx = track.get("index", 0)
         name = track.get("name", "")
@@ -129,17 +149,24 @@ def _compile_safe_spotlight(move: SemanticMove, kernel: dict) -> CompiledPlan:
             continue
         if track.get("type") in ("return", "master"):
             continue
+        target = resolvers.compile_relative_volume(
+            track.get("volume"), -15, floor=0.15, fallback=0.30
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": idx, "volume": 0.30},
-            description=f"Pull {name} to 0.30 (background)",
+            params={"track_index": idx, "volume": target},
+            description=f"Pull {name} to {target:.2f} (background)",
         ))
 
-    # Push spotlight
+    # Push spotlight — RELATIVE nudge, capped just above the historical
+    # fallback so the spotlight lands in the same ballpark it always did.
+    spotlight_target = resolvers.compile_relative_volume(
+        spotlight.get("volume"), 10, cap=0.85, fallback=0.82
+    )
     steps.append(CompiledStep(
         tool="set_track_volume",
-        params={"track_index": spotlight_idx, "volume": 0.82},
-        description=f"Push spotlight {spotlight_name} to 0.82",
+        params={"track_index": spotlight_idx, "volume": spotlight_target},
+        description=f"Push spotlight {spotlight_name} to {spotlight_target:.2f}",
     ))
     descriptions.append(f"Spotlight {spotlight_name}")
 
@@ -176,10 +203,17 @@ def _compile_emergency_simplify(move: SemanticMove, kernel: dict) -> CompiledPla
             continue
         if idx in keep_indices:
             continue
+        # RELATIVE nudge (P2-21 pattern) — "emergency simplify" genuinely
+        # means strip aggressively, so the delta is intentionally large
+        # (-25%), but still bounded (floor=0.05) and direction-safe: a
+        # track already quieter than 0.05 doesn't get nudged back UP.
+        target = resolvers.compile_relative_volume(
+            track.get("volume"), -25, floor=0.05, fallback=0.10
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": idx, "volume": 0.10},
-            description=f"Strip {name} to 0.10 (emergency simplify)",
+            params={"track_index": idx, "volume": target},
+            description=f"Strip {name} to {target:.2f} (emergency simplify)",
         ))
 
     descriptions.append("Strip to drums+bass only")

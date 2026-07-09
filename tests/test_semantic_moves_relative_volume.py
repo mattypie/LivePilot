@@ -149,3 +149,180 @@ def test_tighten_low_end_reduces_relative_to_current_level():
         if s.tool == "set_track_volume" and s.params.get("track_index") == 1
     ]
     assert bass_steps[0].params["volume"] == pytest.approx(0.70)  # 0.8 - 0.10
+
+
+# ── performance_compilers.py: recover_energy / decompress_tension /
+#    safe_spotlight / emergency_simplify must also nudge RELATIVE to the
+#    track's current level, not overwrite with a flat absolute value. Same
+#    P2-21 pattern, ported from resolvers/mix_compilers — these four were
+#    the last holdouts still writing absolute volumes. ────────────────────
+
+
+def test_recover_energy_pushes_a_hot_drum_track_up_not_down():
+    """A drum bus already at 0.9 (hotter than the historical 0.70 flat
+    write) must end up pushed further, never pulled back down toward the
+    old absolute — recovery should never make an already-recovering track
+    quieter."""
+    kernel = _kernel_with_volumes(drum_volume=0.9, bass_volume=0.5)
+    move = get_move("recover_energy")
+    plan = compile_move(move, kernel)
+
+    drum_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 0
+    ]
+    assert len(drum_steps) == 1
+    assert drum_steps[0].params["volume"] >= 0.9
+
+
+def test_recover_energy_pushes_drums_and_bass_up_from_moderate_level():
+    kernel = _kernel_with_volumes(drum_volume=0.5, bass_volume=0.4)
+    move = get_move("recover_energy")
+    plan = compile_move(move, kernel)
+
+    drum_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 0
+    ]
+    bass_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 1
+    ]
+    assert drum_steps[0].params["volume"] > 0.5
+    assert bass_steps[0].params["volume"] > 0.4
+
+
+def test_recover_energy_falls_back_to_absolute_when_volume_missing():
+    tracks = [{"index": 0, "name": "Drums"}, {"index": 1, "name": "Bass"}]
+    kernel = {"mode": "explore", "session_info": {"tempo": 120, "tracks": tracks}}
+    move = get_move("recover_energy")
+    plan = compile_move(move, kernel)
+
+    drum_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 0
+    ]
+    bass_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 1
+    ]
+    assert drum_steps[0].params["volume"] == pytest.approx(0.70)
+    assert bass_steps[0].params["volume"] == pytest.approx(0.60)
+
+
+def test_decompress_tension_pulls_leads_down_but_floors_a_quiet_lead():
+    kernel = {
+        "mode": "explore",
+        "session_info": {
+            "tempo": 120,
+            "tracks": [{"index": 0, "name": "Lead", "volume": 0.22}],
+        },
+    }
+    move = get_move("decompress_tension")
+    plan = compile_move(move, kernel)
+
+    lead_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 0
+    ]
+    assert len(lead_steps) == 1
+    assert lead_steps[0].params["volume"] == pytest.approx(0.20)  # floored
+
+
+def test_decompress_tension_pulls_a_hot_lead_down_relative_to_current():
+    kernel = {
+        "mode": "explore",
+        "session_info": {
+            "tempo": 120,
+            "tracks": [{"index": 0, "name": "Lead", "volume": 0.8}],
+        },
+    }
+    move = get_move("decompress_tension")
+    plan = compile_move(move, kernel)
+
+    lead_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 0
+    ]
+    assert lead_steps[0].params["volume"] < 0.8
+
+
+def test_safe_spotlight_pushes_spotlight_up_and_pulls_others_down_relatively():
+    kernel = {
+        "mode": "explore",
+        "session_info": {
+            "tempo": 120,
+            "tracks": [
+                {"index": 0, "name": "Drums", "volume": 0.5},
+                {"index": 1, "name": "Bass", "volume": 0.5},
+                {"index": 2, "name": "Lead", "volume": 0.5},
+            ],
+        },
+    }
+    move = get_move("safe_spotlight")
+    plan = compile_move(move, kernel)
+
+    spotlight_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 2
+    ]
+    background_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") in (0, 1)
+    ]
+    assert spotlight_steps[0].params["volume"] > 0.5
+    assert len(background_steps) == 2
+    for s in background_steps:
+        assert s.params["volume"] < 0.5
+
+
+def test_safe_spotlight_floors_an_already_quiet_background_track():
+    kernel = {
+        "mode": "explore",
+        "session_info": {
+            "tempo": 120,
+            "tracks": [
+                {"index": 0, "name": "Drums", "volume": 0.16},
+                {"index": 1, "name": "Lead", "volume": 0.5},
+            ],
+        },
+    }
+    move = get_move("safe_spotlight")
+    plan = compile_move(move, kernel)
+
+    background_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 0
+    ]
+    assert background_steps[0].params["volume"] == pytest.approx(0.15)  # floored
+
+
+def test_emergency_simplify_strips_non_kept_tracks_relative_to_current():
+    kernel = _kernel_with_volumes(drum_volume=0.7, bass_volume=0.7, pad_volume=0.7)
+    move = get_move("emergency_simplify")
+    plan = compile_move(move, kernel)
+
+    pad_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 2
+    ]
+    drum_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 0
+    ]
+    # Drums and bass are in keep_indices — no volume-strip step emitted for them.
+    assert len(drum_steps) == 0
+    assert len(pad_steps) == 1
+    assert pad_steps[0].params["volume"] < 0.7
+
+
+def test_emergency_simplify_does_not_nudge_an_already_silent_track_back_up():
+    kernel = _kernel_with_volumes(pad_volume=0.03)
+    move = get_move("emergency_simplify")
+    plan = compile_move(move, kernel)
+
+    pad_steps = [
+        s for s in plan.steps
+        if s.tool == "set_track_volume" and s.params.get("track_index") == 2
+    ]
+    assert pad_steps[0].params["volume"] == pytest.approx(0.03)

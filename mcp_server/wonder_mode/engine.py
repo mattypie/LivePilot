@@ -616,6 +616,40 @@ def _pick_recommended(ranked: list[dict]) -> str:
     return ranked[0]["variant_id"]
 
 
+def _pick_boldest_executable(ranked: list[dict]) -> Optional[dict]:
+    """Pick the highest-novelty EXECUTABLE variant as a second recommendation.
+
+    `_pick_recommended` deliberately biases toward the top-ranked variant,
+    which is itself weighted toward taste/identity/coherence fit (see
+    `_select_weights`) — by construction the "recommended" slot is rarely
+    the boldest option, even for a request that explicitly asked to be
+    surprised (novelty only gets a minority weight in every weight
+    profile). This surfaces the boldest EXECUTABLE alternative alongside
+    it so a "surprise me" caller isn't structurally steered away from
+    genuine novelty. Analytical-only shells are excluded (nothing to run).
+    Ties on novelty_level are broken by rank (prefer the better-ranked of
+    equally-novel variants). Returns None when no executable variant exists
+    (e.g. an all-analytical cold-start set).
+    """
+    executable = [v for v in ranked if not v.get("analytical_only", False)]
+    if not executable:
+        return None
+    boldest = max(
+        executable,
+        key=lambda v: (v.get("novelty_level", 0.0), -v.get("rank", 10 ** 9)),
+    )
+    novelty = boldest.get("novelty_level", 0.0)
+    return {
+        "variant_id": boldest.get("variant_id", ""),
+        "why": (
+            f"Highest-novelty executable alternative (novelty {novelty:.2f}) "
+            f"— the top recommendation favors taste/identity fit over "
+            f"novelty by design, so this is the boldest option that can "
+            f"actually be run."
+        ),
+    }
+
+
 def generate_wonder_variants(
     request_text: str,
     diagnosis: dict | None = None,
@@ -749,6 +783,10 @@ def generate_wonder_variants(
         "request": request_text,
         "variants": ranked,
         "recommended": _pick_recommended(ranked),
+        # Additive second slot (does not change `recommended`'s semantics):
+        # the highest-novelty EXECUTABLE variant, surfaced alongside the
+        # safe/taste-weighted recommendation. See _pick_boldest_executable.
+        "boldest_executable": _pick_boldest_executable(ranked),
         "taste_evidence": taste_evidence,
         "identity_confidence": song_brain.get("identity_confidence", 0.0),
         "move_count_matched": len(moves),

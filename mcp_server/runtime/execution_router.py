@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from .remote_commands import BRIDGE_COMMANDS, REMOTE_COMMANDS
+
+logger = logging.getLogger(__name__)
 
 
 # MCP-only tools that exist as Python functions but NOT as TCP handlers.
@@ -402,3 +405,39 @@ async def execute_plan_steps_async(
             break
 
     return results
+
+
+# ── Undo helper ──────────────────────────────────────────────────────────
+
+async def undo_remote_steps(ableton: Any, exec_results: list[ExecutionResult]) -> int:
+    """Undo the remote_command steps from a list of ExecutionResults.
+
+    Only remote_command steps land on Ableton's linear undo stack — bridge
+    (M4L/OSC) and mcp_tool mutations do NOT, so issuing one `undo` per
+    successful step regardless of backend over-undoes and walks back
+    unrelated prior user edits. This counts successful remote_command
+    steps and issues exactly that many `undo` calls via
+    ``ableton.send_command_async``, stopping early if an undo call raises
+    (leaving the rest un-undone rather than risking a cascading error).
+
+    Extracted from the duplicated experiment/engine.py + preview_studio
+    /tools.py undo-count logic (both had drifted into copy-pasted
+    near-identical blocks) so the "count remote_command successes, then
+    undo that many times" rule lives in exactly one place.
+
+    Returns the number of undo calls actually issued (<= the number of
+    successful remote_command steps; less if an undo call raised partway
+    through).
+    """
+    undo_count = sum(
+        1 for r in exec_results if r.ok and r.backend == "remote_command"
+    )
+    issued = 0
+    for _ in range(undo_count):
+        try:
+            await ableton.send_command_async("undo", {})
+            issued += 1
+        except Exception as exc:
+            logger.debug("undo_remote_steps: undo call failed: %s", exc)
+            break
+    return issued

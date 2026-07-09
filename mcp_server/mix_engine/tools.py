@@ -84,11 +84,17 @@ def _fetch_mix_data(ctx: Context) -> dict:
 
 
 @mcp.tool()
-def analyze_mix(ctx: Context) -> dict:
+def analyze_mix(ctx: Context, target_style: str = "dynamic") -> dict:
     """Build full mix state and run all critics.
 
     Returns the complete mix analysis including all sub-states
     (balance, masking, dynamics, stereo, depth) and all detected issues.
+
+    target_style: intended dynamics target for the dynamics critic.
+        "dynamic" (default) — standard mix expectations.
+        "loud_master" — deliberately loud, heavily-limited master: the
+        over_compressed check is suppressed (3-6dB crest is the intended
+        sound there, not a defect).
     """
     data = _fetch_mix_data(ctx)
     mix_state = build_mix_state(
@@ -97,7 +103,9 @@ def analyze_mix(ctx: Context) -> dict:
         spectrum=data["spectrum"],
         rms_data=data["rms_data"],
     )
-    issues = run_all_mix_critics(mix_state)
+    issues = run_all_mix_critics(
+        mix_state, dynamics_context={"target_style": target_style}
+    )
     moves = plan_mix_moves(issues, mix_state)
     sonic_snapshot = normalize_sonic_snapshot(data["spectrum"], source="mix_engine")
     sonic_character = extract_character_profile(sonic_snapshot or {})
@@ -113,10 +121,12 @@ def analyze_mix(ctx: Context) -> dict:
 
 
 @mcp.tool()
-def get_mix_issues(ctx: Context) -> dict:
+def get_mix_issues(ctx: Context, target_style: str = "dynamic") -> dict:
     """Run all mix critics and return detected issues only.
 
     Lighter than analyze_mix — skips move planning.
+
+    target_style: "dynamic" (default) or "loud_master" — see analyze_mix.
     """
     data = _fetch_mix_data(ctx)
     mix_state = build_mix_state(
@@ -125,7 +135,9 @@ def get_mix_issues(ctx: Context) -> dict:
         spectrum=data["spectrum"],
         rms_data=data["rms_data"],
     )
-    issues = run_all_mix_critics(mix_state)
+    issues = run_all_mix_critics(
+        mix_state, dynamics_context={"target_style": target_style}
+    )
     sonic_snapshot = normalize_sonic_snapshot(data["spectrum"], source="mix_engine")
 
     return {

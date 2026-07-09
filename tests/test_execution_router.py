@@ -341,3 +341,74 @@ def test_mcp_dispatch_registry_contains_load_sample_to_simpler():
     reg = build_mcp_dispatch_registry()
     assert "load_sample_to_simpler" in reg
     assert callable(reg["load_sample_to_simpler"])
+
+
+# ── undo_remote_steps ────────────────────────────────────────────────
+#
+# Extracted from the duplicated undo-count logic in experiment/engine.py
+# and preview_studio/tools.py — both used to compute "how many
+# remote_command steps succeeded" and issue that many `undo` calls
+# independently. Now both call this single helper.
+
+
+class FakeAbletonAsync:
+    """Ableton fake exposing send_command_async, mirroring the real
+    AbletonConnection's async wrapper used by undo_remote_steps."""
+
+    def __init__(self, fail_after: int | None = None):
+        self.undo_calls = 0
+        self._fail_after = fail_after
+
+    async def send_command_async(self, cmd, params=None):
+        assert cmd == "undo"
+        self.undo_calls += 1
+        if self._fail_after is not None and self.undo_calls > self._fail_after:
+            raise RuntimeError("fake undo failure")
+        return {"ok": True}
+
+
+def test_undo_remote_steps_counts_only_remote_command_successes():
+    from mcp_server.runtime.execution_router import undo_remote_steps
+
+    ab = FakeAbletonAsync()
+    exec_results = [
+        ExecutionResult(ok=True, backend="remote_command", tool="set_track_volume"),
+        ExecutionResult(ok=True, backend="bridge_command", tool="get_hidden_params"),
+        ExecutionResult(ok=True, backend="mcp_tool", tool="analyze_mix"),
+        ExecutionResult(ok=False, backend="remote_command", tool="set_track_pan"),
+        ExecutionResult(ok=True, backend="remote_command", tool="set_track_send"),
+    ]
+    issued = asyncio.run(undo_remote_steps(ab, exec_results))
+    # Only the 2 successful remote_command steps count — bridge/mcp_tool
+    # successes and the failed remote_command step must NOT trigger undo.
+    assert issued == 2
+    assert ab.undo_calls == 2
+
+
+def test_undo_remote_steps_no_remote_command_steps_issues_nothing():
+    from mcp_server.runtime.execution_router import undo_remote_steps
+
+    ab = FakeAbletonAsync()
+    exec_results = [
+        ExecutionResult(ok=True, backend="bridge_command", tool="get_hidden_params"),
+        ExecutionResult(ok=True, backend="mcp_tool", tool="analyze_mix"),
+    ]
+    issued = asyncio.run(undo_remote_steps(ab, exec_results))
+    assert issued == 0
+    assert ab.undo_calls == 0
+
+
+def test_undo_remote_steps_stops_early_on_undo_failure():
+    from mcp_server.runtime.execution_router import undo_remote_steps
+
+    ab = FakeAbletonAsync(fail_after=1)
+    exec_results = [
+        ExecutionResult(ok=True, backend="remote_command", tool="a"),
+        ExecutionResult(ok=True, backend="remote_command", tool="b"),
+        ExecutionResult(ok=True, backend="remote_command", tool="c"),
+    ]
+    issued = asyncio.run(undo_remote_steps(ab, exec_results))
+    # 1st undo succeeds, 2nd raises and breaks the loop — the 3rd is never
+    # attempted, and the failed call itself isn't counted as issued.
+    assert issued == 1
+    assert ab.undo_calls == 2

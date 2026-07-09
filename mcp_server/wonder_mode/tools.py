@@ -466,6 +466,10 @@ def rank_wonder_variants(
         # rule as generate_wonder_variants; ranked[0] alone could hand back a
         # non-executable/analytical-only shell.
         "recommended": engine._pick_recommended(ranked),
+        # Additive second slot: the highest-novelty EXECUTABLE variant, for
+        # callers who invoked Wonder Mode wanting genuine surprise rather
+        # than the safest taste-weighted pick.
+        "boldest_executable": engine._pick_boldest_executable(ranked),
     }
 
 

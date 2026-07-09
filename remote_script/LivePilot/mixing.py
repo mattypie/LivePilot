@@ -509,9 +509,12 @@ def set_compressor_sidechain(song, params):
         # "-<name>" so a bare name still matches without the caller guessing
         # Live's 1-based numbering.
         if matched is None:
-            suffix = "-" + str(source_type)
+            # casefold both sides so a caller's "Kick" matches Live's
+            # "1-KICK" / "1-Kick" / "1-kick" regardless of the routing
+            # menu's own case convention (varies by device/build).
+            suffix = ("-" + str(source_type)).casefold()
             for rt in available:
-                if rt.display_name.endswith(suffix):
+                if rt.display_name.casefold().endswith(suffix):
                     matched = rt
                     break
         if matched is None:

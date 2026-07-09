@@ -505,6 +505,49 @@ def test_bug_a3_reopen_legacy_compressor_uses_flat_surface():
     assert result["sidechain"]["channel"] == "Pre FX"
 
 
+def test_sidechain_bare_name_match_is_case_insensitive():
+    """The tolerant bare-name fallback (suffix match on "-<name>") must
+    casefold both sides. A caller passing a bare lowercase track name
+    ("kick") must still match an index-prefixed, differently-cased display
+    name ("1-KICK") — this used to be a strict `str.endswith` and silently
+    failed to match unless the caller's casing happened to agree with
+    Live's routing-menu casing exactly."""
+    mixing = _load_remote_mixing()
+
+    class _RT:
+        def __init__(self, name):
+            self.display_name = name
+
+    class _RC:
+        def __init__(self, name):
+            self.display_name = name
+
+    rt_kick, rt_ext = _RT("1-KICK"), _RT("Ext. In")
+    rc_pre, rc_post = _RC("Pre FX"), _RC("Post FX")
+
+    class _Compressor:
+        class_name = "Compressor"
+        name = "Compressor"
+        parameters = []
+
+        def __init__(self):
+            self.sidechain_enabled = False
+            self.available_sidechain_input_routing_types = [rt_kick, rt_ext]
+            self.available_sidechain_input_routing_channels = [rc_pre, rc_post]
+            self.sidechain_input_routing_type = rt_ext
+            self.sidechain_input_routing_channel = rc_post
+
+    comp = _Compressor()
+    # Bare, lowercase name — no index prefix, wrong case relative to "KICK".
+    result = mixing.set_compressor_sidechain(
+        _compressor_routing_song(comp),
+        {"track_index": 0, "device_index": 0, "source_type": "kick"},
+    )
+    assert result["ok"] is True
+    assert comp.sidechain_input_routing_type is rt_kick
+    assert result["sidechain"]["type"] == "1-KICK"
+
+
 def test_bug_a3_reopen_compressor2_missing_surface_raises_with_diagnostic():
     """Compressor2 without any known LOM sidechain surface — the error
     must embed a dir() audit so the next run reveals what IS exposed.

@@ -12,7 +12,7 @@ from mcp_server.wonder_mode.engine import (
     select_distinct_variants,
 )
 from mcp_server.wonder_mode import engine as _wonder_engine
-from mcp_server.wonder_mode.engine import _pick_recommended
+from mcp_server.wonder_mode.engine import _pick_recommended, _pick_boldest_executable
 from mcp_server.memory.taste_graph import TasteGraph
 
 
@@ -446,6 +446,69 @@ def test_pick_recommended_falls_back_to_top_when_all_analytical():
     ]
     assert _pick_recommended(ranked) == "a"
     assert _pick_recommended([]) == ""
+
+
+# ── _pick_boldest_executable (second recommendation slot) ─────────────
+
+
+def test_pick_boldest_executable_prefers_highest_novelty():
+    """The ranker structurally favors safe/well-fit variants (see
+    _select_weights) — boldest_executable must surface the highest-
+    novelty EXECUTABLE variant regardless of its rank."""
+    ranked = [
+        {"variant_id": "safe", "analytical_only": False, "novelty_level": 0.25, "rank": 1},
+        {"variant_id": "strong", "analytical_only": False, "novelty_level": 0.55, "rank": 2},
+        {"variant_id": "unexpected", "analytical_only": False, "novelty_level": 0.85, "rank": 3},
+    ]
+    result = _pick_boldest_executable(ranked)
+    assert result["variant_id"] == "unexpected"
+    assert "why" in result and result["why"]
+
+
+def test_pick_boldest_executable_excludes_analytical_only_shells():
+    ranked = [
+        {"variant_id": "shell", "analytical_only": True, "novelty_level": 0.95, "rank": 1},
+        {"variant_id": "real", "analytical_only": False, "novelty_level": 0.4, "rank": 2},
+    ]
+    result = _pick_boldest_executable(ranked)
+    assert result["variant_id"] == "real"
+
+
+def test_pick_boldest_executable_breaks_novelty_ties_by_rank():
+    ranked = [
+        {"variant_id": "worse_rank", "analytical_only": False, "novelty_level": 0.5, "rank": 3},
+        {"variant_id": "better_rank", "analytical_only": False, "novelty_level": 0.5, "rank": 1},
+    ]
+    result = _pick_boldest_executable(ranked)
+    assert result["variant_id"] == "better_rank"
+
+
+def test_pick_boldest_executable_none_when_all_analytical():
+    ranked = [
+        {"variant_id": "a", "analytical_only": True, "novelty_level": 0.9, "rank": 1},
+    ]
+    assert _pick_boldest_executable(ranked) is None
+    assert _pick_boldest_executable([]) is None
+
+
+def test_pick_boldest_executable_can_equal_recommended():
+    """When the boldest executable variant IS the top-ranked recommendation
+    (e.g. only one executable variant exists), both fields legitimately
+    point at the same variant_id — this is not an error case."""
+    ranked = [
+        {"variant_id": "only", "analytical_only": False, "novelty_level": 0.5, "rank": 1},
+    ]
+    assert _pick_recommended(ranked) == "only"
+    assert _pick_boldest_executable(ranked)["variant_id"] == "only"
+
+
+def test_generate_wonder_variants_includes_boldest_executable_field():
+    """Additive field — must not remove/rename `recommended`."""
+    result = generate_wonder_variants(
+        request_text="make it punchier", diagnosis={}, song_brain=_sample_brain(),
+    )
+    assert "boldest_executable" in result
+    assert "recommended" in result
 
 
 def test_rank_preserves_all_fields():

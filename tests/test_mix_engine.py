@@ -584,3 +584,139 @@ def test_over_compressed_band_still_fires():
     types = {i.issue_type for i in issues}
     assert "over_compressed" in types
     assert "flat_dynamics" not in types
+
+
+# ── TestConfidenceDerivation ─────────────────────────────────────────
+#
+# Confidence values must be data-derived, not decorative flat literals.
+# These tests pin the modulation direction (more/better data -> higher
+# confidence) and the [0.3, 0.95] bounds, without over-specifying exact
+# numbers so the formula can be tuned later.
+
+
+class TestConfidenceDerivation:
+    def test_balance_confidence_scales_with_active_track_count(self):
+        """anchor_too_weak confidence should be higher when the average it's
+        compared against is backed by more tracks."""
+        few_tracks = [
+            TrackMixState(track_index=0, name="Kick", role="kick", volume=0.1),
+            TrackMixState(track_index=1, name="Bass", role="bass", volume=0.8),
+        ]
+        many_tracks = few_tracks + [
+            TrackMixState(track_index=i, name=f"T{i}", role="pad", volume=0.8)
+            for i in range(2, 8)
+        ]
+        few_issues = run_balance_critic(BalanceState(
+            track_states=few_tracks, anchor_tracks=[0, 1],
+            loudest_track=1, quietest_track=0,
+        ))
+        many_issues = run_balance_critic(BalanceState(
+            track_states=many_tracks, anchor_tracks=[0, 1],
+            loudest_track=1, quietest_track=0,
+        ))
+        few_conf = next(i.confidence for i in few_issues if i.issue_type == "anchor_too_weak")
+        many_conf = next(i.confidence for i in many_issues if i.issue_type == "anchor_too_weak")
+        assert many_conf > few_conf
+        assert 0.3 <= few_conf <= 0.95
+        assert 0.3 <= many_conf <= 0.95
+
+    def test_masking_confidence_higher_when_measured(self):
+        """Real per-track spectral overlap should earn a higher confidence
+        than a role-pair heuristic prior with identical severity."""
+        measured_entry = MaskingEntry(
+            track_a=0, track_b=1, overlap_band="sub", severity=0.6, measured=True,
+            severity_basis="spectral_overlap",
+        )
+        heuristic_entry = MaskingEntry(
+            track_a=0, track_b=1, overlap_band="sub", severity=0.6, measured=False,
+            severity_basis="role_heuristic",
+        )
+        measured_issue = run_masking_critic(MaskingMap(entries=[measured_entry]))[0]
+        heuristic_issue = run_masking_critic(MaskingMap(entries=[heuristic_entry]))[0]
+        assert measured_issue.confidence > heuristic_issue.confidence
+        assert 0.3 <= heuristic_issue.confidence <= 0.95
+        assert 0.3 <= measured_issue.confidence <= 0.95
+
+    def test_dynamics_confidence_higher_at_band_center_than_edge(self):
+        """over_compressed confidence should be highest at the center of the
+        3-6dB band and discounted near either edge."""
+        edge = build_dynamics_state(rms=0.5, peak=10 ** (3.01 / 20) * 0.5)  # crest ~3.01
+        center = build_dynamics_state(rms=0.5, peak=10 ** (4.5 / 20) * 0.5)  # crest ~4.5
+        edge_issue = next(i for i in run_dynamics_critic(edge) if i.issue_type == "over_compressed")
+        center_issue = next(i for i in run_dynamics_critic(center) if i.issue_type == "over_compressed")
+        assert center_issue.confidence > edge_issue.confidence
+        assert 0.3 <= edge_issue.confidence <= 0.95
+
+    def test_dynamics_low_headroom_confidence_scales_with_depth(self):
+        shallow = DynamicsState(crest_factor_db=10.0, over_compressed=False, headroom=0.95)
+        deep = DynamicsState(crest_factor_db=10.0, over_compressed=False, headroom=0.05)
+        shallow_conf = next(i.confidence for i in run_dynamics_critic(shallow) if i.issue_type == "low_headroom")
+        deep_conf = next(i.confidence for i in run_dynamics_critic(deep) if i.issue_type == "low_headroom")
+        assert deep_conf > shallow_conf
+        assert 0.3 <= shallow_conf <= 0.95
+
+    def test_dynamics_context_loud_master_suppresses_over_compressed(self):
+        """context={"target_style": "loud_master"} must suppress the
+        over_compressed flag entirely — deliberately loud masters target
+        this exact crest band by design."""
+        ds = DynamicsState(crest_factor_db=4.5, over_compressed=True, headroom=6.0)
+        default_issues = run_dynamics_critic(ds)
+        loud_master_issues = run_dynamics_critic(ds, context={"target_style": "loud_master"})
+        assert any(i.issue_type == "over_compressed" for i in default_issues)
+        assert not any(i.issue_type == "over_compressed" for i in loud_master_issues)
+
+    def test_dynamics_over_compressed_evidence_states_the_assumption(self):
+        """Even without context, the evidence string must state the dynamic-
+        mix-target assumption so a reader doesn't over-trust the flag for a
+        style that intentionally sits in the 3-6dB crest band."""
+        ds = DynamicsState(crest_factor_db=4.5, over_compressed=True, headroom=6.0)
+        issue = next(i for i in run_dynamics_critic(ds) if i.issue_type == "over_compressed")
+        assert "assumes" in issue.evidence.lower()
+
+    def test_run_all_mix_critics_forwards_dynamics_context(self):
+        """run_all_mix_critics must thread an optional dynamics_context
+        through without requiring callers to pass it (default-preserving)."""
+        ms = MixState(dynamics=DynamicsState(crest_factor_db=4.5, over_compressed=True, headroom=6.0))
+        default_issues = run_all_mix_critics(ms)
+        suppressed_issues = run_all_mix_critics(ms, dynamics_context={"target_style": "loud_master"})
+        assert any(i.issue_type == "over_compressed" for i in default_issues)
+        assert not any(i.issue_type == "over_compressed" for i in suppressed_issues)
+
+    def test_stereo_and_depth_and_translation_confidence_scale_with_margin(self):
+        """Deep-in-the-flagged-region measurements should out-confidence
+        barely-past-threshold ones for stereo/depth/translation critics."""
+        deep_mono = run_stereo_critic(StereoState(center_strength=0.99, side_activity=0.0, mono_risk=True))[0]
+        edge_mono = run_stereo_critic(StereoState(center_strength=0.86, side_activity=0.049, mono_risk=True))[0]
+        assert deep_mono.confidence > edge_mono.confidence
+
+        deep_wash = run_depth_critic(DepthState(wet_dry_ratio=1.0, depth_separation=0.2, wash_risk=True))[0]
+        edge_wash = run_depth_critic(DepthState(wet_dry_ratio=0.61, depth_separation=0.2, wash_risk=True))[0]
+        assert deep_wash.confidence > edge_wash.confidence
+
+        dyn = DynamicsState(crest_factor_db=14.0, over_compressed=False, headroom=6.0)
+        deep_translation = run_translation_critic(
+            dyn, StereoState(center_strength=0.0, side_activity=1.0, mono_risk=False),
+        )[0]
+        edge_translation = run_translation_critic(
+            dyn, StereoState(center_strength=0.29, side_activity=0.51, mono_risk=False),
+        )[0]
+        assert deep_translation.confidence > edge_translation.confidence
+
+    def test_confidence_never_leaves_bounds(self):
+        """Spot-check bounds across a spread of critics/inputs."""
+        all_issues = []
+        all_issues += run_balance_critic(BalanceState(
+            track_states=[
+                TrackMixState(track_index=0, name="Kick", role="kick", volume=0.01),
+                TrackMixState(track_index=1, name="Bass", role="bass", volume=1.0),
+            ],
+            anchor_tracks=[0, 1], loudest_track=1, quietest_track=0,
+        ))
+        all_issues += run_masking_critic(MaskingMap(entries=[
+            MaskingEntry(track_a=0, track_b=1, overlap_band="sub", severity=1.0, measured=True),
+        ]))
+        all_issues += run_dynamics_critic(DynamicsState(
+            crest_factor_db=0.01, over_compressed=False, headroom=0.0,
+        ))
+        for issue in all_issues:
+            assert 0.3 <= issue.confidence <= 0.95, (issue.issue_type, issue.confidence)
