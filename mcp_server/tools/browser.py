@@ -327,12 +327,12 @@ def load_browser_item(
 
     # Post-load: probe the loaded device once, then apply two layers of hygiene.
     #
-    # 2026-05-02 — fixed device-detection bug. The TCP load_browser_item command
-    # returns {loaded, name, device_count} with NO device_index and NO class_name,
-    # so the previous detection (`result.get("device_index")` / `result.get("class_name")`)
-    # always failed and the role-defaults branch was never entered. Resolution:
-    # treat newly-loaded sample-on-empty-track as device_index=0 (Live places the
-    # instrument at chain head) and verify class + name via get_device_info.
+    # 2026-06-24 — fixed wrong-device bug. Live APPENDS a newly-loaded device at
+    # the END of the chain, so on a NON-EMPTY track the loaded device is NOT at
+    # index 0. The remote handler now returns device_index (= device_count - 1);
+    # we use that (falling back to device_count - 1, then 0) and probe THAT index
+    # to verify class + name before applying any role-default / hygiene writes —
+    # otherwise the writes would hit the pre-existing device 0.
     #
     # Layer 1 (gated on `role`): Simpler role-aware defaults — Snap/Volume/
     # Trigger Mode/Transpose for drum/melodic/texture roles.
@@ -342,18 +342,32 @@ def load_browser_item(
     device_class = ""
     device_name_loaded = ""
     if isinstance(result, dict) and result.get("loaded") and not result.get("error"):
+        # Resolve the index of the JUST-LOADED device. Live appends new devices
+        # at the END of the chain, so the loaded device is device_count - 1 —
+        # NOT index 0. Probing/writing index 0 on a NON-EMPTY track would
+        # read/mutate the WRONG (pre-existing) device while leaving the freshly
+        # loaded one at raw defaults (the documented drum-Simpler Transpose=+24
+        # silent-failure path). Prefer the remote-reported device_index, fall
+        # back to device_count - 1, then to 0 (empty track / unknown count).
         device_index_resolved = result.get("device_index")
+        if device_index_resolved is None:
+            dc = result.get("device_count")
+            device_index_resolved = (dc - 1) if isinstance(dc, int) and dc > 0 else 0
         try:
             probe = ableton.send_command("get_device_info", {
                 "track_index": track_index,
-                "device_index": 0,
+                "device_index": int(device_index_resolved),
             })
             device_class = str(probe.get("class_name", "") or "")
             device_name_loaded = str(probe.get("name", "") or result.get("name", "") or "")
-            if device_index_resolved is None:
-                device_index_resolved = 0
-        except Exception:
-            pass
+        except Exception as exc:
+            # Surface the probe failure instead of silently swallowing it: the
+            # role-defaults / M4L-hygiene blocks below are gated on
+            # device_class / device_name_loaded and will quietly skip, so
+            # without this the load reports success while post-load hygiene
+            # (drum Transpose=+24, Snap, Volume) never ran.
+            result["role_defaults_skipped"] = "device probe failed: %s" % exc
+            device_name_loaded = str(result.get("name", "") or "")
 
     # Layer 0 — atlas-aware preflight. Surface a follow-up hint when the
     # loaded device declares self_contained=false in its atlas enrichment

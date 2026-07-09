@@ -155,7 +155,9 @@ async def _try_native_replace_sample(
     if nested_device_index is not None:
         params["nested_device_index"] = int(nested_device_index)
     try:
-        resp = ableton.send_command("replace_sample_native", params)
+        resp = await asyncio.to_thread(
+            ableton.send_command, "replace_sample_native", params
+        )
     except Exception as exc:
         _record_skip("dispatch_raised: %s: %s" % (type(exc).__name__, exc))
         return None
@@ -196,7 +198,7 @@ async def reconnect_bridge(ctx: Context) -> dict:
 
     bridge_state = ctx.lifespan_context.get("_bridge_state")
     if not bridge_state:
-        return {"error": "Bridge state not available — restart the MCP server"}
+        return {"error": "Bridge state not available — restart the MCP server", "code": "STATE_ERROR"}
 
     if bridge_state["transport"] is not None:
         return {"ok": True, "message": "Bridge already connected on UDP 9880"}
@@ -214,6 +216,7 @@ async def reconnect_bridge(ctx: Context) -> dict:
         holder = _identify_port_holder(9880)
         return {
             "ok": False,
+            "code": "STATE_ERROR",
             "error": f"UDP port 9880 still in use{f' (PID {holder})' if holder else ''}. "
                      "Close the other LivePilot instance first.",
         }
@@ -279,7 +282,7 @@ async def get_master_spectrum(
         # Each cache read is ~free; we sleep between reads to let the
         # analyzer update its internal buffer.
         if window_ms > 10000:
-            return {"error": "window_ms must be <= 10000 (10 seconds)"}
+            return {"error": "window_ms must be <= 10000 (10 seconds)", "code": "INVALID_PARAM"}
         n = samples if samples > 0 else max(3, window_ms // 50)
         n = min(n, 100)
         interval = (window_ms / 1000.0) / max(n - 1, 1)
@@ -292,6 +295,7 @@ async def get_master_spectrum(
                 await asyncio.sleep(interval)
         if not bands_acc:
             return {
+                "code": "STATE_ERROR",
                 "error": "No spectrum data captured — analyzer may be stale",
                 "analyzer_hint": "Ensure LivePilot_Analyzer is active on master",
             }
@@ -467,7 +471,7 @@ async def get_detected_key(ctx: Context) -> dict:
     if "error" in result:
         return result
     if not result.get("key"):
-        return {"error": "Not enough audio analyzed yet. Play 4-8 bars for key detection."}
+        return {"error": "Not enough audio analyzed yet. Play 4-8 bars for key detection.", "code": "STATE_ERROR"}
     return result
 
 
@@ -657,6 +661,7 @@ async def replace_simpler_sample(
         return result
     if not result.get("sample_loaded"):
         return {
+            "code": "STATE_ERROR",
             "error": "Sample may not have loaded. Ensure the Simpler already "
             "has a sample loaded — replace_sample silently fails on empty Simplers.",
             "native_attempted": _native_dispatch_was_attempted(skip_reason),
@@ -721,7 +726,7 @@ async def load_sample_to_simpler(
     if caps.has_replace_sample_native:
         fallback_reason = "native_insert_device_unavailable"
         try:
-            ins = ableton.send_command("insert_device", {
+            ins = await asyncio.to_thread(ableton.send_command, "insert_device", {
                 "track_index": track_index,
                 "device_name": "Simpler",
             })
@@ -756,33 +761,35 @@ async def load_sample_to_simpler(
 
     # Step 1: Load a sample from the browser to create Simpler with content
     try:
-        search = ableton.send_command("search_browser", {
+        search = await asyncio.to_thread(ableton.send_command, "search_browser", {
             "path": "samples",
             "name_filter": "kick",
             "loadable_only": True,
             "max_results": 1,
         })
     except Exception as exc:
-        return {"error": f"Browser search failed: {exc}"}
+        return {"error": f"Browser search failed: {exc}", "code": "INTERNAL"}
     results = search.get("results", [])
     if not results:
-        return {"error": "No samples found in browser to bootstrap Simpler"}
+        return {"error": "No samples found in browser to bootstrap Simpler", "code": "NOT_FOUND"}
 
     # Load the dummy sample — Ableton auto-creates Simpler
     uri = results[0]["uri"]
     try:
-        ableton.send_command("load_browser_item", {
+        await asyncio.to_thread(ableton.send_command, "load_browser_item", {
             "track_index": track_index,
             "uri": uri,
         })
     except Exception as exc:
-        return {"error": f"Failed to load bootstrap sample: {exc}"}
+        return {"error": f"Failed to load bootstrap sample: {exc}", "code": "INTERNAL"}
 
     # Step 2: Find the newly created device (it's at the end of the chain)
     try:
-        track_info = ableton.send_command("get_track_info", {"track_index": track_index})
+        track_info = await asyncio.to_thread(
+            ableton.send_command, "get_track_info", {"track_index": track_index}
+        )
     except Exception as exc:
-        return {"error": f"Failed to read track after loading sample: {exc}"}
+        return {"error": f"Failed to read track after loading sample: {exc}", "code": "INTERNAL"}
     actual_device_index = len(track_info.get("devices", [])) - 1
     if actual_device_index < 0:
         actual_device_index = 0
@@ -794,7 +801,7 @@ async def load_sample_to_simpler(
     if "error" in result:
         return result
     if not result.get("sample_loaded"):
-        return {"error": "Sample replacement failed after bootstrap"}
+        return {"error": "Sample replacement failed after bootstrap", "code": "INTERNAL"}
 
     # Step 4: Verify by reading back the device name (P0-1 guard)
     hygiene = await _simpler_post_load_hygiene(
@@ -872,6 +879,7 @@ async def add_drum_rack_pad(
     if not caps.has_replace_sample_native:
         return {
             "ok": False,
+            "code": "STATE_ERROR",
             "error": (
                 "add_drum_rack_pad requires Live 12.4+ for native nested "
                 "sample loading. Detected tier: " + caps.capability_tier +
@@ -881,18 +889,19 @@ async def add_drum_rack_pad(
         }
 
     if not (0 <= pad_note <= 127):
-        return {"ok": False, "error": "pad_note must be 0..127"}
+        return {"ok": False, "error": "pad_note must be 0..127", "code": "INVALID_PARAM"}
     if not file_path or not isinstance(file_path, str):
-        return {"ok": False, "error": "file_path (absolute path) is required"}
+        return {"ok": False, "error": "file_path (absolute path) is required", "code": "INVALID_PARAM"}
 
     # Step 1: locate the Drum Rack if not provided.
     if rack_device_index is None:
         try:
-            info = ableton.send_command(
+            info = await asyncio.to_thread(
+                ableton.send_command,
                 "get_track_info", {"track_index": track_index},
             )
         except Exception as exc:
-            return {"ok": False, "error": f"get_track_info failed: {exc}"}
+            return {"ok": False, "error": f"get_track_info failed: {exc}", "code": "INTERNAL"}
         devices = info.get("devices", []) if isinstance(info, dict) else []
         found_idx = None
         for idx, d in enumerate(devices):
@@ -907,52 +916,55 @@ async def add_drum_rack_pad(
                     "No Drum Rack found on track. Pass `rack_device_index` "
                     "explicitly, or use `insert_device('Drum Rack')` first."
                 ),
+                "code": "NOT_FOUND",
             }
         rack_device_index = found_idx
 
     # Step 2: insert a new chain on the rack.
     try:
-        chain_result = ableton.send_command("insert_rack_chain", {
+        chain_result = await asyncio.to_thread(ableton.send_command, "insert_rack_chain", {
             "track_index": track_index,
             "device_index": rack_device_index,
             "position": -1,  # append to end
         })
     except Exception as exc:
-        return {"ok": False, "error": f"insert_rack_chain failed: {exc}"}
+        return {"ok": False, "error": f"insert_rack_chain failed: {exc}", "code": "INTERNAL"}
     if not isinstance(chain_result, dict) or "error" in chain_result:
         return {
             "ok": False,
             "error": f"insert_rack_chain returned: {chain_result}",
+            "code": "INTERNAL",
         }
     chain_index = int(chain_result.get("chain_index", chain_result.get("index", 0)))
 
     # Step 3: assign pad note to the new chain.
     try:
-        note_result = ableton.send_command("set_drum_chain_note", {
+        note_result = await asyncio.to_thread(ableton.send_command, "set_drum_chain_note", {
             "track_index": track_index,
             "device_index": rack_device_index,
             "chain_index": chain_index,
             "note": pad_note,
         })
     except Exception as exc:
-        return {"ok": False, "error": f"set_drum_chain_note failed: {exc}"}
+        return {"ok": False, "error": f"set_drum_chain_note failed: {exc}", "code": "INTERNAL"}
     if isinstance(note_result, dict) and "error" in note_result:
-        return {"ok": False, "error": f"set_drum_chain_note: {note_result['error']}"}
+        return {"ok": False, "error": f"set_drum_chain_note: {note_result['error']}", "code": "INTERNAL"}
 
     # Step 4: insert an empty Simpler into the chain.
     try:
-        insert_result = ableton.send_command("insert_device", {
+        insert_result = await asyncio.to_thread(ableton.send_command, "insert_device", {
             "track_index": track_index,
             "device_index": rack_device_index,
             "chain_index": chain_index,
             "device_name": "Simpler",
         })
     except Exception as exc:
-        return {"ok": False, "error": f"insert_device(Simpler, chain) failed: {exc}"}
+        return {"ok": False, "error": f"insert_device(Simpler, chain) failed: {exc}", "code": "INTERNAL"}
     if not isinstance(insert_result, dict) or "error" in insert_result:
         return {
             "ok": False,
             "error": f"insert_device into chain failed: {insert_result}",
+            "code": "INTERNAL",
         }
     nested_idx = int(insert_result.get("device_index", 0))
 
@@ -968,6 +980,7 @@ async def add_drum_rack_pad(
     if native is None:
         return {
             "ok": False,
+            "code": "INTERNAL",
             "error": "Native replace_sample failed — see logs for reason",
             "track_index": track_index,
             "rack_device_index": rack_device_index,
@@ -979,7 +992,7 @@ async def add_drum_rack_pad(
     applied_name = None
     if chain_name:
         try:
-            rename_result = ableton.send_command("set_chain_name", {
+            rename_result = await asyncio.to_thread(ableton.send_command, "set_chain_name", {
                 "track_index": track_index,
                 "device_index": rack_device_index,
                 "chain_index": chain_index,
@@ -1087,7 +1100,7 @@ async def classify_simpler_slices(
     )
     enriched = _enrich_slice_response(raw_slices)
     if enriched is None:
-        return {"error": "Bridge returned no slice data"}
+        return {"error": "Bridge returned no slice data", "code": "STATE_ERROR"}
 
     # 2. Resolve file path via Remote Script TCP path (v1.23.3+ — closes
     # the v1.12 follow-up). Reads ``device.sample.file_path`` directly
@@ -1102,7 +1115,8 @@ async def classify_simpler_slices(
         ableton = ctx.request_context.lifespan_context.get("ableton")
         if ableton is not None:
             try:
-                rs_resp = ableton.send_command(
+                rs_resp = await asyncio.to_thread(
+                    ableton.send_command,
                     "get_simpler_file_path",
                     {"track_index": track_index, "device_index": device_index},
                 )
@@ -1134,28 +1148,32 @@ async def classify_simpler_slices(
     if not wav_path:
         return {
             **enriched,
+            "code": "STATE_ERROR",
             "error": (
                 resolve_error
                 or "No file_path available — pass file_path= explicitly."
             ),
         }
 
-    # 3. Load WAV and build frame boundaries
+    # 3. Load WAV and build frame boundaries (decode off the event loop)
     try:
-        audio, sr = sf.read(wav_path)
+        audio, sr = await asyncio.to_thread(sf.read, wav_path)
     except (sf.LibsndfileError, sf.SoundFileError, RuntimeError, OSError) as exc:
         # BUG-audit-C3: corrupt / missing / non-audio files must return a
         # structured error dict instead of raising through the MCP framework
         # (inconsistent with every other tool in this module).
         return {
             **enriched,
+            "code": "INTERNAL",
             "error": f"Could not load WAV at {wav_path!r}: {exc}",
         }
     slices = enriched["slices"]
     frame_boundaries = [s["frame"] for s in slices] + [len(audio)]
 
-    # 4. Classify
-    classifications = classify_slices(audio, sr, frame_boundaries)
+    # 4. Classify (per-slice FFT loop — offload off the event loop)
+    classifications = await asyncio.to_thread(
+        classify_slices, audio, sr, frame_boundaries
+    )
 
     # 5. Merge classification into each slice entry
     merged_slices = []
@@ -1471,7 +1489,7 @@ def get_spectral_shape(ctx: Context) -> dict:
     data = cache.get("spectral_shape")
     if not data:
         hint = _flucoma_hint(cache)
-        return {"error": f"No spectral shape data — {hint}"}
+        return {"error": f"No spectral shape data — {hint}", "code": "STATE_ERROR"}
     return {**data["value"], "age_ms": data["age_ms"]}
 
 
@@ -1486,7 +1504,7 @@ def get_mel_spectrum(ctx: Context) -> dict:
     data = cache.get("mel_bands")
     if not data:
         hint = _flucoma_hint(cache)
-        return {"error": f"No mel data — {hint}"}
+        return {"error": f"No mel data — {hint}", "code": "STATE_ERROR"}
     return {"mel_bands": data["value"], "band_count": len(data["value"]), "age_ms": data["age_ms"]}
 
 
@@ -1501,7 +1519,7 @@ def get_chroma(ctx: Context) -> dict:
     data = cache.get("chroma")
     if not data:
         hint = _flucoma_hint(cache)
-        return {"error": f"No chroma data — {hint}"}
+        return {"error": f"No chroma data — {hint}", "code": "STATE_ERROR"}
     values = data["value"]
     chroma_dict = {PITCH_NAMES[i]: round(v, 3) for i, v in enumerate(values[:12])}
     max_val = max(values[:12]) if values else 0
@@ -1521,7 +1539,7 @@ def get_onsets(ctx: Context) -> dict:
     data = cache.get("onset")
     if not data:
         hint = _flucoma_hint(cache)
-        return {"error": f"No onset data — {hint}"}
+        return {"error": f"No onset data — {hint}", "code": "STATE_ERROR"}
     return {**data["value"], "age_ms": data["age_ms"]}
 
 
@@ -1536,7 +1554,7 @@ def get_novelty(ctx: Context) -> dict:
     data = cache.get("novelty")
     if not data:
         hint = _flucoma_hint(cache)
-        return {"error": f"No novelty data — {hint}"}
+        return {"error": f"No novelty data — {hint}", "code": "STATE_ERROR"}
     return {**data["value"], "age_ms": data["age_ms"]}
 
 
@@ -1590,15 +1608,15 @@ async def verify_device_health(
     if test_duration_ms > 2000:
         test_duration_ms = 2000
     if not 1 <= test_velocity <= 127:
-        return {"ok": False, "error": "test_velocity must be 1-127"}
+        return {"ok": False, "error": "test_velocity must be 1-127", "code": "INVALID_PARAM"}
     if not 0 <= test_midi_note <= 127:
-        return {"ok": False, "error": "test_midi_note must be 0-127"}
+        return {"ok": False, "error": "test_midi_note must be 0-127", "code": "INVALID_PARAM"}
 
     # Fire the test note via the remote script's play_note helper. Fall back
     # to a raw MIDI event if the helper isn't available.
     fired = False
     try:
-        resp = ableton.send_command("fire_test_note", {
+        resp = await asyncio.to_thread(ableton.send_command, "fire_test_note", {
             "track_index": track_index,
             "midi_note": test_midi_note,
             "velocity": test_velocity,
@@ -1613,6 +1631,7 @@ async def verify_device_health(
         # Graceful degradation when the remote-script helper isn't present.
         return {
             "ok": False,
+            "code": "STATE_ERROR",
             "error": (
                 "fire_test_note handler not available on this remote script. "
                 "Update LivePilot's remote script (npx livepilot --install + "
@@ -1628,7 +1647,7 @@ async def verify_device_health(
     samples_taken = 0
     for i in range(n):
         try:
-            snap = ableton.send_command("get_track_meters", {
+            snap = await asyncio.to_thread(ableton.send_command, "get_track_meters", {
                 "track_index": track_index,
             })
         except Exception as exc:
@@ -1650,7 +1669,9 @@ async def verify_device_health(
 
     # Always clean up the scratch clip, even on errors.
     try:
-        ableton.send_command("cleanup_test_note", {"track_index": track_index})
+        await asyncio.to_thread(
+            ableton.send_command, "cleanup_test_note", {"track_index": track_index}
+        )
     except Exception as exc:
         logger.debug("cleanup_test_note failed: %s", exc)
 
@@ -1708,11 +1729,11 @@ async def verify_all_devices_health(
     """
     ableton = ctx.lifespan_context["ableton"]
     try:
-        session = ableton.send_command("get_session_info", {})
+        session = await asyncio.to_thread(ableton.send_command, "get_session_info", {})
     except Exception as exc:
-        return {"ok": False, "error": f"get_session_info failed: {exc}"}
+        return {"ok": False, "error": f"get_session_info failed: {exc}", "code": "INTERNAL"}
     if not isinstance(session, dict):
-        return {"ok": False, "error": "Unexpected get_session_info response"}
+        return {"ok": False, "error": "Unexpected get_session_info response", "code": "INTERNAL"}
 
     tracks = session.get("tracks", []) or []
     alive: list = []
@@ -1748,7 +1769,8 @@ async def verify_all_devices_health(
         # devices) would change a hot-path payload size for every caller.
         if skip_empty_tracks:
             try:
-                track_info = ableton.send_command(
+                track_info = await asyncio.to_thread(
+                    ableton.send_command,
                     "get_track_info", {"track_index": tid},
                 )
             except Exception:
@@ -1809,7 +1831,7 @@ def get_momentary_loudness(ctx: Context) -> dict:
     data = cache.get("loudness")
     if not data:
         hint = _flucoma_hint(cache)
-        return {"error": f"No loudness data — {hint}"}
+        return {"error": f"No loudness data — {hint}", "code": "STATE_ERROR"}
     return {**data["value"], "age_ms": data["age_ms"]}
 
 
@@ -1847,9 +1869,9 @@ async def analyze_loudness_live(
     }
     """
     if window_sec <= 0 or window_sec > 120:
-        return {"error": "window_sec must be > 0 and <= 120"}
+        return {"error": "window_sec must be > 0 and <= 120", "code": "INVALID_PARAM"}
     if sample_interval_ms < 50 or sample_interval_ms > 5000:
-        return {"error": "sample_interval_ms must be 50..5000"}
+        return {"error": "sample_interval_ms must be 50..5000", "code": "INVALID_PARAM"}
 
     cache = _get_spectral(ctx)
     _require_analyzer(cache)
@@ -1859,10 +1881,10 @@ async def analyze_loudness_live(
     preview = cache.get("loudness")
     if not preview:
         hint = _flucoma_hint(cache)
-        return {"error": f"No live loudness stream — {hint}"}
+        return {"error": f"No live loudness stream — {hint}", "code": "STATE_ERROR"}
 
     try:
-        session = ableton.send_command("get_session_info", {})
+        session = await asyncio.to_thread(ableton.send_command, "get_session_info", {})
         is_playing = bool(session.get("is_playing", False))
     except Exception:
         is_playing = None
@@ -1888,7 +1910,7 @@ async def analyze_loudness_live(
             await asyncio.sleep(interval_s)
 
     if not lufs_vals:
-        return {"error": "No valid loudness samples captured over the window"}
+        return {"error": "No valid loudness samples captured over the window", "code": "STATE_ERROR"}
 
     integrated = sum(lufs_vals) / len(lufs_vals)
     result = {
@@ -2016,7 +2038,11 @@ async def compressor_set_sidechain(
     if source_channel:
         params["source_channel"] = str(source_channel)
     ableton = ctx.lifespan_context["ableton"]
-    return ableton.send_command("set_compressor_sidechain", params)
+    # Offload the blocking TCP round-trip off the asyncio event loop so this
+    # async tool doesn't freeze every other concurrent handler + the bridge.
+    return await asyncio.to_thread(
+        ableton.send_command, "set_compressor_sidechain", params
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2100,6 +2126,7 @@ def ensure_analyzer_on_master(ctx: Context) -> dict:
     except Exception as exc:
         return {
             "status": "failed",
+            "code": "INTERNAL",
             "error": f"Could not read master track: {exc}",
             "hint": "Verify MCP connection to Ableton; retry with get_session_info first.",
         }
@@ -2154,6 +2181,7 @@ def ensure_analyzer_on_master(ctx: Context) -> dict:
         if _analyzer_amxd_installed_at_user_library():
             return {
                 "status": "cache_cold",
+                "code": "STATE_ERROR",
                 "error": str(exc),
                 "hint": (
                     "LivePilot_Analyzer.amxd is installed at "
@@ -2169,6 +2197,7 @@ def ensure_analyzer_on_master(ctx: Context) -> dict:
             }
         return {
             "status": "install_required",
+            "code": "STATE_ERROR",
             "error": str(exc),
             "hint": (
                 "LivePilot_Analyzer not found in Ableton's browser. Install "

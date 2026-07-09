@@ -17,6 +17,7 @@ resulting in silent playback. The hygiene here fixes both.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -86,10 +87,14 @@ _ONESHOT_HINTS = (
     "/one_shots/",
     "/one-shots/",
 )
-_LOOP_FILENAME_RE = re.compile(
-    r"(?:_|\b)\d{2,3}(?:_|bpm|\b)|(?:_|\b)loop(?:_|\b)",
-    re.IGNORECASE,
-)
+# The "loop" word is an unambiguous loop signal.
+_LOOP_TOKEN_RE = re.compile(r"(?:_|\b)loop(?:_|\b)", re.IGNORECASE)
+# A bare 2-3 digit number is an AMBIGUOUS signal — it matches Splice bare-BPM
+# names ("pluck_124_Cmin") but ALSO drum-machine model numbers / indices in
+# one-shot names ("Kick_808", "snare_05", "tom_120").
+_BARE_NUMBER_RE = re.compile(r"(?:_|\b)(\d{2,3})(?:_|bpm|\b)", re.IGNORECASE)
+# Drum-machine model numbers are gear identifiers, NEVER tempos.
+_DRUM_MACHINE_MODELS = frozenset({808, 909, 707, 606, 505, 727, 626, 303, 333, 555})
 
 
 def _is_warped_loop(file_path: str) -> bool:
@@ -113,16 +118,34 @@ def _is_warped_loop(file_path: str) -> bool:
         return False
 
     stem = os.path.splitext(os.path.basename(file_path))[0]
+
+    # Explicit, unambiguous loop signals win first — genuine drum/melodic loops
+    # almost always carry one of these (a "125bpm" literal, a "loop" token, or
+    # a loops folder), so honoring them keeps the 2026-05-01 broadening intact.
     if _BPM_IN_FILENAME_RE.search(stem):
         return True
-    if _LOOP_FILENAME_RE.search(stem):
+    if _LOOP_TOKEN_RE.search(stem):
         return True
     # Append trailing slash so `/loops/` and `/drum_loops/` match the
     # last directory component cleanly (os.path.dirname strips trailing /).
     parent = os.path.dirname(file_path).lower() + "/"
     if any(seg in parent for seg in _LOOP_PATH_HINTS):
         return True
-    return False
+
+    # Only a bare 2-3 digit number remains. This is where drum ONE-SHOTS were
+    # being misclassified as warped loops (Kick_808, snare_05, tom_120), which
+    # then skipped the drum-root Transpose (-> plays 2 octaves down), force-
+    # looped, and warped them — the documented recurring drum-Simpler bug.
+    # A drum-machine model number is never a tempo; a bare number on a
+    # drum-material name with no explicit loop signal is a one-shot, not a loop.
+    m = _BARE_NUMBER_RE.search(stem)
+    if not m:
+        return False
+    if int(m.group(1)) in _DRUM_MACHINE_MODELS:
+        return False
+    if _detect_drum_root_note(file_path) is not None:
+        return False
+    return True
 
 
 def _filename_stem(file_path: str) -> str:
@@ -181,8 +204,11 @@ async def _simpler_post_load_hygiene(
 
     # Step 1: verify device name matches expected file
     try:
-        track_info = ableton.send_command(
-            "get_track_info", {"track_index": track_index}
+        # send_command is blocking socket I/O; this is an async tool, so offload
+        # to a worker thread to avoid freezing the event loop (and the bridge
+        # UDP endpoint + all other concurrent handlers) for the round-trip.
+        track_info = await asyncio.to_thread(
+            ableton.send_command, "get_track_info", {"track_index": track_index}
         )
     except Exception as exc:
         return {"error": f"Verification read failed: {exc}"}
@@ -276,7 +302,7 @@ async def _simpler_post_load_hygiene(
             )
 
     try:
-        ableton.send_command("batch_set_parameters", {
+        await asyncio.to_thread(ableton.send_command, "batch_set_parameters", {
             "track_index": track_index,
             "device_index": device_index,
             "parameters": hygiene_params,
@@ -293,7 +319,7 @@ async def _simpler_post_load_hygiene(
     # to Slice/One-Shot explicitly if they want.
     playback_mode_set = False
     try:
-        ableton.send_command("set_simpler_playback_mode", {
+        await asyncio.to_thread(ableton.send_command, "set_simpler_playback_mode", {
             "track_index": track_index,
             "device_index": device_index,
             "playback_mode": 0,  # 0 = Classic, 1 = One-Shot, 2 = Slice

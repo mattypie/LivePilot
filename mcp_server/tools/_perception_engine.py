@@ -413,6 +413,12 @@ def compare_to_reference(
         "stereo_width_mix": stereo_width_mix,
         "stereo_width_ref": stereo_width_ref,
         "band_deltas": band_deltas,
+        # Absolute per-band energy balances (NOT deltas). The reference
+        # builder needs the reference's OWN band_balance to populate a
+        # ReferenceProfile; band_deltas (mix - ref) is the wrong scale for
+        # that. Kept alongside band_deltas so existing callers are unaffected.
+        "mix_band_balance": dict(mix_bands),
+        "reference_band_balance": dict(ref_bands),
         "suggestions": suggestions,
     }
 
