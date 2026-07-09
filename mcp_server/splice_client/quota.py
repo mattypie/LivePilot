@@ -146,6 +146,34 @@ class DailyQuotaTracker:
         used, _ = self.current()
         return used >= self.warn_threshold
 
+    def check_budget(self, additional: int = 1) -> dict:
+        """Atomic snapshot combining would_exceed/near_limit/at_limit.
+
+        `would_exceed()` and `near_limit()` each independently call
+        `current()`, which reads the on-disk state under its own lock
+        acquisition. That's safe for either predicate alone, but a
+        caller (like `decide_download`) that wants BOTH answers for one
+        decision could otherwise observe two different moments if a
+        concurrent `record_download()` lands between the two reads. This
+        takes a single lock and derives every predicate from the same
+        `used` count.
+
+        Returns a dict compatible in spirit with `summary()` but with an
+        explicit `would_exceed` for the caller's `additional` count.
+        """
+        with self._lock:
+            state = self._load()
+            used = state.counts.get(_today_utc(), 0)
+        remaining = max(0, self.daily_limit - used)
+        return {
+            "used_today": used,
+            "remaining_today": remaining,
+            "daily_limit": self.daily_limit,
+            "would_exceed": (used + additional) > self.daily_limit,
+            "near_limit": used >= self.warn_threshold,
+            "at_limit": used >= self.daily_limit,
+        }
+
     # ── Mutations ─────────────────────────────────────────────────────
 
     def record_download(self, file_hash: str, filename: str = "") -> dict:

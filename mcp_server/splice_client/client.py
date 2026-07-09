@@ -156,6 +156,14 @@ class SpliceGRPCClient:
         self._quota = quota_tracker or get_tracker()
         # Cached plan state — refreshed on every explicit get_credits() call.
         self._cached_credits: Optional[SpliceCredits] = None
+        # Connection-health state. `connected=True` only proves the local
+        # gRPC channel object constructed — it does NOT prove Splice
+        # desktop is reachable. Real failures surface on the first RPC.
+        # `degraded` records that transition so the next call knows to
+        # retry `connect()` once instead of trusting a stale `connected`
+        # flag forever (see `_mark_degraded` / `_ensure_connected`).
+        self.degraded = False
+        self.last_error: Optional[str] = None
 
     @property
     def available(self) -> bool:
@@ -191,11 +199,16 @@ class SpliceGRPCClient:
             self.stub = self._pb2_grpc.AppStub(self.channel)
             self._port = port
             self.connected = True
+            # A fresh successful connect clears any prior degradation —
+            # this is the "one reconnect attempt" landing.
+            self.degraded = False
+            self.last_error = None
             logger.info(f"Connected to Splice gRPC on port {port}")
             return True
         except Exception as exc:
             logger.warning(f"Failed to connect to Splice: {exc}")
             self.connected = False
+            self.last_error = str(exc)
             return False
 
     async def disconnect(self):
@@ -205,6 +218,38 @@ class SpliceGRPCClient:
             self.channel = None
             self.stub = None
             self.connected = False
+
+    def _mark_degraded(self, exc: Exception) -> None:
+        """Record an RPC failure and drop the (falsely optimistic) `connected` flag.
+
+        `connect()` only proves the local channel object constructed, not
+        that Splice desktop is actually listening — that only surfaces on
+        the first real RPC. Without this, `connected` stayed True forever
+        after a Splice restart and every wrapper kept returning empty
+        defaults indistinguishable from genuine zero-result state for the
+        rest of the process lifetime. Callers can inspect `self.degraded`
+        / `self.last_error` to tell "connection is unhealthy" apart from
+        "legitimately found nothing".
+        """
+        self.degraded = True
+        self.last_error = str(exc)
+        self.connected = False
+
+    async def _ensure_connected(self) -> bool:
+        """True if the client is (or becomes) usable for an RPC call.
+
+        Retries `connect()` exactly once after a prior degradation —
+        cheap, since `connect()` only re-reads port.conf/cert and
+        rebuilds the local channel object, it doesn't itself probe the
+        network. A client that was never connected (and never marked
+        degraded) returns False immediately, matching the historical
+        "not connected → return default" behavior.
+        """
+        if self.connected:
+            return True
+        if not getattr(self, "degraded", False):
+            return False
+        return await self.connect()
 
     # ── Search ──────────────────────────────────────────────────────
 
@@ -237,7 +282,7 @@ class SpliceGRPCClient:
         composition where role-correctness matters more than text-match
         on free-form query strings (BUG-FULL-MODE-9, 2026-05-01).
         """
-        if not self.connected:
+        if not await self._ensure_connected():
             return SpliceSearchResult()
 
         pb2 = self._pb2
@@ -267,6 +312,7 @@ class SpliceGRPCClient:
             return self._parse_search_response(response)
         except Exception as exc:
             logger.warning(f"Splice search failed: {exc}")
+            self._mark_degraded(exc)
             return SpliceSearchResult()
 
     def _parse_search_response(self, response) -> SpliceSearchResult:
@@ -317,13 +363,18 @@ class SpliceGRPCClient:
         When not known we do NOT fetch the sample — that would waste
         a SampleInfo round-trip. Unknown samples default to paid.
         """
-        if not self.connected:
+        if not await self._ensure_connected():
             return DownloadDecision(
                 allowed=False,
                 reason="Splice desktop app not reachable",
                 plan_kind=PlanKind.UNKNOWN,
                 gating_mode="blocked",
             )
+
+        logger.debug(
+            "decide_download: file_hash=%s sample=%s",
+            file_hash, sample.filename if sample else "<unknown>",
+        )
 
         # Fast path: free samples bypass every gate.
         if sample is not None and sample.is_free:
@@ -346,32 +397,46 @@ class SpliceGRPCClient:
         plan = credits.plan_kind
 
         if plan == PlanKind.ABLETON_LIVE:
-            quota = self._quota.summary()
-            if quota["at_limit"]:
+            # `check_budget` reads would_exceed/near_limit/at_limit from a
+            # SINGLE lock-protected snapshot (see quota.py) instead of the
+            # stale `summary()["at_limit"]` check, which never consulted
+            # the would_exceed/near_limit predicates that already existed
+            # for exactly this purpose. Note this is still a check-then-act
+            # against the eventual `record_download()` call — that gap is
+            # inherent (the actual download is a network round-trip away)
+            # and this is a client-side warning, not a hard server limit.
+            budget = self._quota.check_budget(additional=1)
+            if budget["would_exceed"]:
                 return DownloadDecision(
                     allowed=False,
                     reason=(
-                        f"Daily quota hit ({quota['used_today']}/"
-                        f"{quota['daily_limit']}). Resets at UTC midnight."
+                        f"Daily quota hit ({budget['used_today']}/"
+                        f"{budget['daily_limit']}). Resets at UTC midnight."
                     ),
                     plan_kind=plan,
                     gating_mode="daily_quota",
                     credits_remaining=credits.credits,
-                    quota_used=quota["used_today"],
-                    quota_remaining=quota["remaining_today"],
+                    quota_used=budget["used_today"],
+                    quota_remaining=budget["remaining_today"],
+                )
+            reason = (
+                f"Ableton Live plan: {budget['remaining_today']} of "
+                f"{budget['daily_limit']} daily samples remain. Download "
+                "will NOT deplete your 80 Splice.com credits."
+            )
+            if budget["near_limit"]:
+                reason += (
+                    " Approaching the daily cap — consider "
+                    "splice_preview_sample for further auditions today."
                 )
             return DownloadDecision(
                 allowed=True,
-                reason=(
-                    f"Ableton Live plan: {quota['remaining_today']} of "
-                    f"{quota['daily_limit']} daily samples remain. Download "
-                    "will NOT deplete your 80 Splice.com credits."
-                ),
+                reason=reason,
                 plan_kind=plan,
                 gating_mode="daily_quota",
                 credits_remaining=credits.credits,
-                quota_used=quota["used_today"],
-                quota_remaining=quota["remaining_today"],
+                quota_used=budget["used_today"],
+                quota_remaining=budget["remaining_today"],
             )
 
         # Credit-metered plans (SOUNDS_PLUS, CREATOR, CREATOR_PLUS, UNKNOWN).
@@ -418,14 +483,15 @@ class SpliceGRPCClient:
         imperative "go download it" path; the decision is repeated here
         defensively because a future caller might forget to gate.
         """
-        if not self.connected:
+        if not await self._ensure_connected():
             return None
 
         decision = await self.decide_download(file_hash, sample=sample)
         if not decision.allowed:
             logger.warning(
-                "Splice download refused: %s (plan=%s, mode=%s)",
-                decision.reason, decision.plan_kind.value, decision.gating_mode,
+                "Splice download refused for %s: %s (plan=%s, mode=%s)",
+                file_hash, decision.reason, decision.plan_kind.value,
+                decision.gating_mode,
             )
             return None
 
@@ -440,6 +506,7 @@ class SpliceGRPCClient:
             local_path = await self._wait_for_download(file_hash, timeout)
         except Exception as exc:
             logger.warning(f"Splice download failed for {file_hash}: {exc}")
+            self._mark_degraded(exc)
             return None
 
         if local_path is None:
@@ -484,7 +551,7 @@ class SpliceGRPCClient:
 
     async def get_sample_info(self, file_hash: str) -> Optional[SpliceSample]:
         """Get metadata for a specific sample."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return None
 
         pb2 = self._pb2
@@ -496,13 +563,14 @@ class SpliceGRPCClient:
             return self._parse_sample(response.Sample)
         except Exception as exc:
             logger.warning(f"SampleInfo failed: {exc}")
+            self._mark_degraded(exc)
             return None
 
     # ── Credits + Plan ──────────────────────────────────────────────
 
     async def get_credits(self) -> SpliceCredits:
         """Get current credit balance, plan, and feature-flag map."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return SpliceCredits()
 
         pb2 = self._pb2
@@ -540,6 +608,7 @@ class SpliceGRPCClient:
             return creds
         except Exception as exc:
             logger.warning(f"Credit check failed: {exc}")
+            self._mark_degraded(exc)
             return SpliceCredits()
 
     async def can_afford(self, credits_needed: int, budget: int) -> tuple[bool, int]:
@@ -563,7 +632,7 @@ class SpliceGRPCClient:
 
     async def sync_sounds(self) -> bool:
         """Trigger a full Splice library sync."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return False
         pb2 = self._pb2
         try:
@@ -574,6 +643,7 @@ class SpliceGRPCClient:
             return True
         except Exception as exc:
             logger.debug("sync_sounds failed: %s", exc)
+            self._mark_degraded(exc)
             return False
 
     # ── Collections ─────────────────────────────────────────────────
@@ -609,7 +679,7 @@ class SpliceGRPCClient:
         self, page: int = 1, per_page: int = 50,
     ) -> tuple[int, list[SpliceCollection]]:
         """List the user's collections. Returns (total_count, collections)."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return 0, []
         pb2 = self._pb2
         try:
@@ -622,13 +692,14 @@ class SpliceGRPCClient:
             return total, collections
         except Exception as exc:
             logger.warning(f"CollectionsList failed: {exc}")
+            self._mark_degraded(exc)
             return 0, []
 
     async def collection_samples(
         self, uuid: str, page: int = 1, per_page: int = 50,
     ) -> tuple[int, list[SpliceSample]]:
         """List samples inside a collection. Returns (total_hits, samples)."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return 0, []
         pb2 = self._pb2
         try:
@@ -643,11 +714,14 @@ class SpliceGRPCClient:
             return total, samples
         except Exception as exc:
             logger.warning(f"CollectionListSamples failed: {exc}")
+            self._mark_degraded(exc)
             return 0, []
 
     async def add_to_collection(self, uuid: str, sample_hashes: list[str]) -> bool:
         """Add samples to a collection. Returns True on success."""
-        if not self.connected or not sample_hashes:
+        if not sample_hashes:
+            return False
+        if not await self._ensure_connected():
             return False
         pb2 = self._pb2
         try:
@@ -658,13 +732,16 @@ class SpliceGRPCClient:
             return True
         except Exception as exc:
             logger.warning(f"CollectionAddItems failed: {exc}")
+            self._mark_degraded(exc)
             return False
 
     async def remove_from_collection(
         self, uuid: str, sample_hashes: list[str],
     ) -> bool:
         """Remove samples from a collection."""
-        if not self.connected or not sample_hashes:
+        if not sample_hashes:
+            return False
+        if not await self._ensure_connected():
             return False
         pb2 = self._pb2
         try:
@@ -675,11 +752,12 @@ class SpliceGRPCClient:
             return True
         except Exception as exc:
             logger.warning(f"CollectionDeleteItems failed: {exc}")
+            self._mark_degraded(exc)
             return False
 
     async def create_collection(self, name: str) -> Optional[SpliceCollection]:
         """Create a new user collection. Returns the new Collection or None."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return None
         pb2 = self._pb2
         try:
@@ -690,6 +768,7 @@ class SpliceGRPCClient:
             return self._parse_collection(response.Collection)
         except Exception as exc:
             logger.warning(f"CollectionAdd failed: {exc}")
+            self._mark_degraded(exc)
             return None
 
     # ── Packs ───────────────────────────────────────────────────────
@@ -712,7 +791,7 @@ class SpliceGRPCClient:
         Returns (pack, error) — `error` is a user-readable string when the
         lookup didn't find a match.
         """
-        if not self.connected:
+        if not await self._ensure_connected():
             return None, "Splice gRPC not connected"
         pb2 = self._pb2
         target = pack_uuid.strip()
@@ -751,6 +830,7 @@ class SpliceGRPCClient:
         except Exception as exc:
             msg = f"ListSamplePacks gRPC call failed: {type(exc).__name__}: {exc}"
             logger.warning(msg)
+            self._mark_degraded(exc)
             return None, msg
         return None, (
             f"Pack '{target}' not found in the user's library. "
@@ -787,7 +867,7 @@ class SpliceGRPCClient:
         sort_order: str = "",
     ) -> tuple[int, list[SplicePreset]]:
         """List presets the user has purchased/owns."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return 0, []
         pb2 = self._pb2
         try:
@@ -803,13 +883,14 @@ class SpliceGRPCClient:
             return total, presets
         except Exception as exc:
             logger.warning(f"PresetsListPurchased failed: {exc}")
+            self._mark_degraded(exc)
             return 0, []
 
     async def get_preset_info(
         self, uuid: str = "", file_hash: str = "", plugin_name: str = "",
     ) -> Optional[dict]:
         """Fetch metadata for a single preset."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return None
         pb2 = self._pb2
         try:
@@ -826,11 +907,12 @@ class SpliceGRPCClient:
             }
         except Exception as exc:
             logger.warning(f"PresetInfo failed: {exc}")
+            self._mark_degraded(exc)
             return None
 
     async def download_preset(self, uuid: str) -> bool:
         """Trigger a preset download (uses credits)."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return False
         pb2 = self._pb2
         try:
@@ -841,13 +923,14 @@ class SpliceGRPCClient:
             return True
         except Exception as exc:
             logger.warning(f"PresetDownload failed: {exc}")
+            self._mark_degraded(exc)
             return False
 
     # ── Convert to WAV ──────────────────────────────────────────────
 
     async def convert_to_wav(self, path: str) -> Optional[dict]:
         """Convert an audio file to PCM WAV via Splice's converter."""
-        if not self.connected:
+        if not await self._ensure_connected():
             return None
         pb2 = self._pb2
         try:
@@ -864,6 +947,7 @@ class SpliceGRPCClient:
             }
         except Exception as exc:
             logger.warning(f"ConvertToWav failed: {exc}")
+            self._mark_degraded(exc)
             return None
 
     # ── Connection Helpers ──────────────────────────────────────────

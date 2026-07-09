@@ -500,7 +500,8 @@ class SpliceHTTPBridge:
 
         loop = asyncio.get_running_loop()
         last_err = None
-        for attempt in range(1 + max(0, self.config.max_retries)):
+        max_attempts = 1 + max(0, self.config.max_retries)
+        for attempt in range(max_attempts):
             try:
                 return await loop.run_in_executor(
                     None,
@@ -509,10 +510,21 @@ class SpliceHTTPBridge:
                 )
             except SpliceHTTPError as exc:
                 last_err = exc
-                # Retry only on 5xx / network. 4xx is terminal.
+                # Retry only on 5xx / network. 4xx is terminal, and so is a
+                # response-decode failure (DECODE_ERROR) — a malformed body
+                # will fail to parse identically on every retry, so retrying
+                # just burns the backoff delay for no benefit. Both
+                # DECODE_ERROR and NETWORK_ERROR carry status_code=0, which
+                # would otherwise slip past the "< 500 is terminal" check
+                # below and retry forever on a deterministic parse failure.
+                if exc.code == "DECODE_ERROR":
+                    raise
                 if exc.status_code and exc.status_code < 500:
                     raise
-            await asyncio.sleep(min(2 ** attempt, 5))
+            # Only sleep between attempts — not after the final one, which
+            # is about to raise `last_err` and return control to the caller.
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(min(2 ** attempt, 5))
         assert last_err is not None
         raise last_err
 
