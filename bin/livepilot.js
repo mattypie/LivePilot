@@ -164,31 +164,52 @@ function writeVenvStamp() {
 }
 
 /**
+ * Pure decision function for venv staleness — extracted from ensureVenv so
+ * the reinstall/reuse/create branching can be unit-tested without touching
+ * the filesystem or spawning pip/venv. Behavior-identical to the inline
+ * logic it replaces:
+ *   - no venv on disk                       -> "create"
+ *   - venv exists, stamp matches hash       -> "reuse"
+ *   - venv exists, stamp missing/mismatched -> "update"
+ */
+function decideVenvAction(venvExists, storedStamp, currentHash) {
+  if (!venvExists) return "create";
+  if (storedStamp === currentHash) return "reuse";
+  return "update";
+}
+
+/**
  * Ensure a local .venv exists with dependencies installed.
  * Returns the path to the venv Python binary.
  */
 function ensureVenv(systemPython, prefixArgs) {
   const prefix = prefixArgs || [];
   const venvPy = venvPython();
+  const venvExists = fs.existsSync(venvPy);
 
-  // Check if venv already exists and matches the current requirements.txt
-  if (fs.existsSync(venvPy)) {
-    let stamp = null;
+  let stamp = null;
+  if (venvExists) {
     try {
       stamp = fs.readFileSync(venvStampPath(), "utf-8").trim();
     } catch {
       stamp = null; // pre-hash venv (or stamp deleted) — verify by reinstall
     }
-    if (stamp === requirementsHash()) {
-      return venvPy; // venv exists and was installed from this exact requirements.txt
-    }
+  }
+
+  const action = decideVenvAction(venvExists, stamp, requirementsHash());
+
+  if (action === "reuse") {
+    return venvPy; // venv exists and was installed from this exact requirements.txt
+  }
+
+  if (action === "update") {
     console.error("LivePilot: requirements changed — updating Python dependencies...");
     pipInstall(venvPy);
     writeVenvStamp();
     return venvPy;
   }
 
-  // Create venv from scratch
+  // action === "create"
   console.error("LivePilot: setting up Python environment (first run)...");
   execFileSync(systemPython, [...prefix, "-m", "venv", VENV_DIR], {
     cwd: ROOT,
@@ -1054,7 +1075,16 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only auto-run the CLI when this file is executed directly (`node
+// bin/livepilot.js ...` or `npx livepilot ...`). When `require()`d as a
+// module — e.g. from tests exercising `decideVenvAction` in isolation —
+// skip the side-effecting entrypoint. Behavior-identical for real CLI
+// invocations; this guard only matters when the file is `require()`d.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+module.exports = { decideVenvAction, requirementsHash, venvStampPath };
