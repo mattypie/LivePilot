@@ -84,7 +84,7 @@ jobs:
       - name: Verify JS entrypoint parses and --help works
         run: |
           node -c bin/livepilot.js
-          node bin/livepilot.js --help || true
+          node bin/livepilot.js --help
       - name: Verify npm pack includes expected files
         run: |
           npm pack --dry-run 2>&1 | tee /dev/stderr | grep -q "livepilot_bridge.js"

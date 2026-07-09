@@ -7,6 +7,7 @@ All pure computation, zero I/O.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 
 from .models import (

@@ -122,9 +122,11 @@ def is_write_command(command_type):
     return command_type.startswith(WRITE_COMMAND_PREFIXES)
 
 
-# Commands that need longer timeouts (e.g., freeze renders audio)
+# Commands that need longer timeouts (freeze renders audio; flatten runs
+# track.flatten() synchronously in-call)
 SLOW_WRITE_COMMANDS = frozenset([
     "freeze_track",
+    "flatten_track",
 ])
 
 

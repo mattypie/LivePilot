@@ -11,7 +11,7 @@
     {
       "registryType": "npm",
       "identifier": "livepilot",
-      "version": "1.27.1",
+      "version": "1.27.2",
       "transport": {
         "type": "stdio"
       }
