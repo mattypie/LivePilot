@@ -518,6 +518,10 @@ class SpectralReceiver(asyncio.DatagramProtocol):
         self._seen_request_id = False
         self._capture_future: Optional[asyncio.Future] = None
         self._miditool_handler: Optional[Callable[[str, dict, list], None]] = None
+        # Source-address allowlist: the M4L device always sends from loopback.
+        # Track which non-loopback senders we've already warned about so a
+        # spoofing/collision source doesn't spam stderr once per packet.
+        self._warned_sources: set[str] = set()
 
     def set_miditool_handler(self, handler: Optional[Callable[[str, dict, list], None]]) -> None:
         """Register a callback invoked on each /miditool/request packet.
@@ -531,7 +535,27 @@ class SpectralReceiver(asyncio.DatagramProtocol):
     def connection_made(self, transport: asyncio.DatagramTransport) -> None:
         self.transport = transport
 
+    # Any local process can send to this UDP port, so a stray/malicious
+    # sender could poison the spectral cache or spoof /response packets to
+    # resolve pending bridge futures. The M4L device always sends from
+    # loopback, so anything else is dropped. This is a source-address
+    # allowlist, not authentication — a full shared-token handshake between
+    # the .amxd and the bridge is a deeper fix, tracked separately.
+    _ALLOWED_HOSTS = ("127.0.0.1", "::1")
+
     def datagram_received(self, data: bytes, addr: tuple) -> None:
+        host = addr[0] if addr else None
+        if host not in self._ALLOWED_HOSTS:
+            if host not in self._warned_sources:
+                self._warned_sources.add(host)
+                import sys
+                print(
+                    f"LivePilot: dropping UDP packet from non-loopback source "
+                    f"{addr!r} on spectral bridge port (further packets from "
+                    "this source will be dropped silently)",
+                    file=sys.stderr,
+                )
+            return
         try:
             self._parse_osc(data)
         except Exception as exc:

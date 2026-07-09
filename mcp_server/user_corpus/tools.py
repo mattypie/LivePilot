@@ -733,11 +733,40 @@ def corpus_trim_plugin_identity(
     research_priority  : tag value: "low" / "medium" / "skip". Default "low".
     """
     if not plugin_id:
-        return {"error": "plugin_id is required", "status": "error"}
+        return {
+            "error": "plugin_id is required",
+            "code": "INVALID_PARAM",
+            "status": "error",
+        }
+    if not re.match(r"^[a-z0-9-]+$", plugin_id):
+        return {
+            "error": (
+                f"plugin_id '{plugin_id}' contains invalid characters; "
+                "must match ^[a-z0-9-]+$"
+            ),
+            "code": "INVALID_PARAM",
+            "status": "error",
+        }
+    inventory_path = DEFAULT_OUTPUT_ROOT / "plugins" / "_inventory.json"
+    if not inventory_path.exists():
+        return {
+            "error": "No inventory; run corpus_detect_plugins first.",
+            "code": "INVALID_PARAM",
+            "status": "error",
+        }
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    known_ids = {p.get("plugin_id") for p in inventory.get("plugins", [])}
+    if plugin_id not in known_ids:
+        return {
+            "error": f"plugin_id '{plugin_id}' not in inventory.",
+            "code": "INVALID_PARAM",
+            "status": "error",
+        }
     yaml_path = DEFAULT_OUTPUT_ROOT / "plugins" / plugin_id / "identity.yaml"
     if not yaml_path.exists():
         return {
             "error": f"No identity.yaml for plugin_id '{plugin_id}'",
+            "code": "NOT_FOUND",
             "status": "error",
         }
     import yaml as _yaml

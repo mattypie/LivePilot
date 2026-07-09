@@ -299,6 +299,18 @@ class AbletonConnection:
             message = err.get("message", str(err)) if isinstance(err, dict) else str(err)
             log_entry["error"] = code
             self._command_log.append(log_entry)
+            # Client-eviction visibility: when this is the single-client guard
+            # rejection (this process lost the socket to another connected
+            # client — even after the retry-once path above), always try to
+            # surface WHO holds it so the user doesn't have to go hunting.
+            if _is_single_client_state_error(response):
+                other_client = _identify_other_tcp_client(self.host, self.port)
+                if other_client:
+                    message = (
+                        f"{message} Another LivePilot client appears to be "
+                        f"connected on {self.host}:{self.port} ({other_client}). "
+                        "Disconnect the other client and retry."
+                    )
             friendly = _friendly_error(code, message, command_type)
             raise AbletonConnectionError(friendly)
 
