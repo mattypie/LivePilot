@@ -822,3 +822,181 @@ def test_get_device_parameters_tolerates_broken_display_value():
     assert bad["name"] == "Ratio"
     assert bad["value_string"] is None
     assert bad["display_value"] is None
+
+
+class _UndoSong:
+    """Minimal song fake exposing begin/end_undo_step for write handlers."""
+
+    def __init__(self, track):
+        self.tracks = [track]
+        self.return_tracks = []
+        self.undo_steps = 0
+
+    def begin_undo_step(self):
+        self.undo_steps += 1
+
+    def end_undo_step(self):
+        self.undo_steps -= 1
+
+
+def test_set_device_parameter_succeeds_when_readback_raises():
+    """A single set whose str_for_value readback raises AFTER the write has
+    landed must still report success — a display-string failure must never
+    convert an applied write into a reported error (P2-49).
+    """
+    router, _devices = _load_remote_devices()
+
+    class _Param:
+        name = "Tune"
+        min = 0.0
+        max = 1.0
+        value = 0.0
+
+        def str_for_value(self, v):
+            raise RuntimeError("Invalid display value")
+
+        @property
+        def display_value(self):
+            raise RuntimeError("Invalid display value")
+
+    param = _Param()
+
+    class _Device:
+        parameters = [param]
+
+    class _Track:
+        devices = [_Device()]
+
+    response = router.dispatch(
+        _UndoSong(_Track()),
+        {
+            "id": "s1",
+            "type": "set_device_parameter",
+            "params": {
+                "track_index": 0,
+                "device_index": 0,
+                "parameter_index": 0,
+                "value": 0.42,
+            },
+        },
+    )
+
+    assert response["ok"] is True, f"Expected success, got: {response}"
+    result = response["result"]
+    assert abs(result["value"] - 0.42) < 1e-9, "write must have landed"
+    assert result["value_string"] is None
+    assert result["display_value"] is None
+    assert abs(param.value - 0.42) < 1e-9
+
+
+def test_batch_set_parameters_returns_per_item_results_on_partial_failure():
+    """A batch with one bad entry must apply the good writes, report per-item
+    {ok}/{ok: False, error}, and never collapse to a blanket exception (P2-50).
+    """
+    router, _devices = _load_remote_devices()
+
+    class _Param:
+        def __init__(self, name):
+            self.name = name
+            self.min = 0.0
+            self.max = 1.0
+            self.value = 0.0
+
+        def str_for_value(self, v):
+            return "%.2f" % v
+
+        @property
+        def display_value(self):
+            return "%.2f" % self.value
+
+    p_good = _Param("Cutoff")
+
+    class _Device:
+        parameters = [p_good]
+
+    class _Track:
+        devices = [_Device()]
+
+    response = router.dispatch(
+        _UndoSong(_Track()),
+        {
+            "id": "b1",
+            "type": "batch_set_parameters",
+            "params": {
+                "track_index": 0,
+                "device_index": 0,
+                "parameters": [
+                    {"name_or_index": "Cutoff", "value": 0.6},
+                    {"name_or_index": "DoesNotExist", "value": 0.3},
+                ],
+            },
+        },
+    )
+
+    # Transport-level success — the call did not raise mid-loop.
+    assert response["ok"] is True, f"Expected dispatch success, got: {response}"
+    result = response["result"]
+    # Application-level partial success: one good, one bad.
+    assert result["ok"] is False
+    assert result["applied"] == 1
+    assert result["failed"] == 1
+
+    entries = result["parameters"]
+    assert len(entries) == 2
+    assert entries[0]["ok"] is True
+    assert entries[0]["name"] == "Cutoff"
+    assert abs(p_good.value - 0.6) < 1e-9, "earlier write must have landed"
+    assert entries[1]["ok"] is False
+    assert "error" in entries[1]
+    assert entries[1]["name_or_index"] == "DoesNotExist"
+
+
+def test_batch_set_parameters_all_success_reports_ok_true():
+    """When every entry succeeds the batch reports ok=True with applied==N."""
+    router, _devices = _load_remote_devices()
+
+    class _Param:
+        def __init__(self, name):
+            self.name = name
+            self.min = 0.0
+            self.max = 1.0
+            self.value = 0.0
+
+        def str_for_value(self, v):
+            return "%.2f" % v
+
+        @property
+        def display_value(self):
+            return "%.2f" % self.value
+
+    p_a = _Param("A")
+    p_b = _Param("B")
+
+    class _Device:
+        parameters = [p_a, p_b]
+
+    class _Track:
+        devices = [_Device()]
+
+    response = router.dispatch(
+        _UndoSong(_Track()),
+        {
+            "id": "b2",
+            "type": "batch_set_parameters",
+            "params": {
+                "track_index": 0,
+                "device_index": 0,
+                "parameters": [
+                    {"name_or_index": "A", "value": 0.1},
+                    {"name_or_index": 1, "value": 0.9},
+                ],
+            },
+        },
+    )
+
+    assert response["ok"] is True
+    result = response["result"]
+    assert result["ok"] is True
+    assert result["applied"] == 2
+    assert result["failed"] == 0
+    assert all(e["ok"] for e in result["parameters"])

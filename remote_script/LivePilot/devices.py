@@ -14,6 +14,30 @@ def _get_browser():
     return Live.Application.get_application().browser
 
 
+def _safe_value_string(param):
+    """Best-effort ``str_for_value`` readback that never raises.
+
+    Live raises RuntimeError("Invalid display value") from str_for_value on
+    Operator / Compressor2 / AutoFilter2 for some in-range values. On the
+    write path the ``param.value`` assignment has ALREADY landed before this
+    readback runs, so a raise here would convert a successful write into a
+    reported error (the agent then wrongly retries/undoes). Fall back to None
+    so a display-string failure never masks an applied write.
+    """
+    try:
+        return param.str_for_value(param.value)
+    except Exception:
+        return None
+
+
+def _safe_display_value(param):
+    """Best-effort ``display_value`` readback that never raises (see above)."""
+    try:
+        return param.display_value
+    except Exception:
+        return None
+
+
 @register("get_device_info")
 def get_device_info(song, params):
     """Return detailed info for a single device."""
@@ -118,24 +142,33 @@ def set_device_parameter(song, params):
         raise ValueError("Must provide parameter_name or parameter_index")
 
     param.value = value
+    # Readbacks are best-effort: the write above already landed, so a
+    # str_for_value / display_value failure must not surface a successful
+    # write as an error.
     result = {
         "name": param.name,
         "value": param.value,
-        "value_string": param.str_for_value(param.value),
+        "value_string": _safe_value_string(param),
         "min": param.min,
         "max": param.max,
+        "display_value": _safe_display_value(param),
     }
-    # 12.2+: include display_value
-    try:
-        result["display_value"] = param.display_value
-    except AttributeError:
-        pass
     return result
 
 
 @register("batch_set_parameters")
 def batch_set_parameters(song, params):
-    """Set multiple device parameters in one call."""
+    """Set multiple device parameters in one call.
+
+    Partial-success contract: LOM cannot truly roll back per-parameter
+    writes, so a mid-batch failure (typo'd name, out-of-range index) must
+    NOT abort the call and strand earlier writes as an opaque exception.
+    Instead every entry gets an ``{ok, ...}`` / ``{ok: False, error}`` result,
+    the whole loop is wrapped in one begin/end_undo_step so the applied
+    writes are a single undo unit, and the response reports ``applied`` /
+    ``failed`` counts plus a top-level ``ok`` that is True only if all
+    entries succeeded.
+    """
     track_index = int(params["track_index"])
     device_index = int(params["device_index"])
     parameters = params["parameters"]
@@ -144,58 +177,86 @@ def batch_set_parameters(song, params):
 
     dev_params = list(device.parameters)
     results = []
-    for entry in parameters:
-        value = float(entry["value"])
-        name_or_index = entry.get("name_or_index")
+    applied = 0
+    failed = 0
+    song.begin_undo_step()
+    try:
+        for entry in parameters:
+            name_or_index = entry.get("name_or_index")
+            try:
+                # A missing key would otherwise fall through to the name-search
+                # branch as str(None) == "None" and surface as a misleading
+                # "Parameter 'None' not found" — making the agent retry a
+                # phantom name instead of fixing the malformed entry.
+                if name_or_index is None:
+                    raise ValueError(
+                        "entry missing required 'name_or_index' key (got keys: %s)"
+                        % sorted(entry.keys())
+                    )
+                value = float(entry["value"])
 
-        if isinstance(name_or_index, int) or (
-            isinstance(name_or_index, str) and name_or_index.isdigit()
-        ):
-            idx = int(name_or_index)
-            if idx < 0 or idx >= len(dev_params):
-                raise IndexError(
-                    "Parameter index %d out of range (0..%d)"
-                    % (idx, len(dev_params) - 1)
-                )
-            param = dev_params[idx]
-        else:
-            param = None
-            target = str(name_or_index)
-            # Try exact match first
-            for p in dev_params:
-                if p.name == target:
-                    param = p
-                    break
-            # Fallback: case-insensitive match
-            if param is None:
-                target_lower = target.lower()
-                for p in dev_params:
-                    if p.name.lower() == target_lower:
-                        param = p
-                        break
-            if param is None:
-                # List similar parameter names for debugging
-                available = [p.name for p in dev_params[:20]]
-                raise ValueError(
-                    "Parameter '%s' not found on device '%s'. "
-                    "Available (first 20): %s"
-                    % (name_or_index, device.name, ", ".join(available))
-                )
+                if isinstance(name_or_index, int) or (
+                    isinstance(name_or_index, str) and name_or_index.isdigit()
+                ):
+                    idx = int(name_or_index)
+                    if idx < 0 or idx >= len(dev_params):
+                        raise IndexError(
+                            "Parameter index %d out of range (0..%d)"
+                            % (idx, len(dev_params) - 1)
+                        )
+                    param = dev_params[idx]
+                else:
+                    param = None
+                    target = str(name_or_index)
+                    # Try exact match first
+                    for p in dev_params:
+                        if p.name == target:
+                            param = p
+                            break
+                    # Fallback: case-insensitive match
+                    if param is None:
+                        target_lower = target.lower()
+                        for p in dev_params:
+                            if p.name.lower() == target_lower:
+                                param = p
+                                break
+                    if param is None:
+                        # List similar parameter names for debugging
+                        available = [p.name for p in dev_params[:20]]
+                        raise ValueError(
+                            "Parameter '%s' not found on device '%s'. "
+                            "Available (first 20): %s"
+                            % (name_or_index, device.name, ", ".join(available))
+                        )
 
-        param.value = value
-        result_entry = {
-            "name": param.name,
-            "value": param.value,
-            "value_string": param.str_for_value(param.value),
-        }
-        # 12.2+: include display_value
-        try:
-            result_entry["display_value"] = param.display_value
-        except AttributeError:
-            pass
-        results.append(result_entry)
+                param.value = value
+                # Readbacks are best-effort: the write already landed, so a
+                # str_for_value / display_value failure must not flip this
+                # entry to failed.
+                results.append({
+                    "ok": True,
+                    "name": param.name,
+                    "value": param.value,
+                    "value_string": _safe_value_string(param),
+                    "display_value": _safe_display_value(param),
+                })
+                applied += 1
+            except Exception as exc:
+                results.append({
+                    "ok": False,
+                    "name_or_index": name_or_index,
+                    "error": str(exc),
+                })
+                failed += 1
+    finally:
+        song.end_undo_step()
 
-    return {"parameters": results}
+    return {
+        "ok": failed == 0,
+        "applied": applied,
+        "failed": failed,
+        "parameters": results,
+    }
 
 
 @register("toggle_device")
@@ -1299,10 +1360,19 @@ def _get_wavetable(song, params):
     track = get_track(song, int(params["track_index"]))
     device = get_device(track, int(params["device_index"]))
     class_name = str(getattr(device, "class_name", ""))
-    if "Wavetable" not in class_name:
-        raise ValueError("Device at index %d is not Wavetable (class_name=%s)"
-                         % (int(params["device_index"]), class_name))
-    return device
+    # Fast path: explicit Wavetable class_name.
+    if "Wavetable" in class_name:
+        return device
+    # Ableton reports the Wavetable instrument as "InstrumentVector" in some
+    # Live versions.  Accept it only when a Wavetable-specific parameter
+    # ("Osc 1 Pos") is present so that M4L devices that also use the
+    # InstrumentVector class (e.g. Vector FM / Vector Grain) are rejected.
+    if class_name == "InstrumentVector":
+        param_names = {str(getattr(p, "name", "")) for p in getattr(device, "parameters", [])}
+        if any("Osc 1 Pos" in n for n in param_names):
+            return device
+    raise ValueError("Device at index %d is not Wavetable (class_name=%s)"
+                     % (int(params["device_index"]), class_name))
 
 
 @register("get_wavetable_mod_targets")

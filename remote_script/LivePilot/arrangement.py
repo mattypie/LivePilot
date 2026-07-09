@@ -47,7 +47,12 @@ def create_arrangement_clip(song, params):
 
     Uses Live 12's Track.duplicate_clip_to_arrangement(clip, time) API.
     When the requested length exceeds the source clip, multiple adjacent
-    copies are placed to fill the timeline region seamlessly.
+    copies are placed to fill the timeline region seamlessly. Copies are
+    tiled every min(loop_length, source_length) beats so that a
+    loop_length larger than the source never leaves a silent gap between
+    copies. loop_length sets the internal loop region only when
+    loop_length < source_length; when larger, copies tile by source_length
+    and each plays its full native content.
 
     Required: track_index, clip_slot_index, start_time, length
     Optional: loop_length (defaults to session clip length), name, color_index
@@ -83,40 +88,61 @@ def create_arrangement_clip(song, params):
     name = str(params.get("name", ""))
     color_index = params.get("color_index")
 
-    # Place adjacent copies to fill the requested length
+    # Tile the source across [start_time, end_pos). A single duplicate only
+    # carries `source_length` beats of content, so to fill the region
+    # seamlessly we step by `min(loop_length, source_length)` — stepping by a
+    # larger loop_length would leave a silent (loop_length - source_length)
+    # gap between copies (P2-54). loop_length sets the internal loop region
+    # only when loop_length < source_length; when larger, copies tile by
+    # source_length and each plays its full native content.
+    step = min(loop_length, source_length)
+    # A zero/negative effective step would make the tiling loop below never
+    # advance -> unbounded duplicate_clip_to_arrangement on Live's main thread
+    # = DAW hard-freeze. A source clip can report length 0 (LOM state), so
+    # floor the step into a clean structured error instead of looping forever.
+    if step <= 0:
+        raise ValueError(
+            "source clip has zero/invalid length; cannot tile arrangement copies")
     song.begin_undo_step()
     try:
         pos = start_time
         end_pos = start_time + length
         clip_count = 0
-        first_clip_index = None
+        # Record only the placement position per copy. We defer
+        # name/color/loop-region edits to a single post-loop pass below so
+        # the hot loop does NOT re-materialize the full arrangement_clips
+        # vector every iteration (was O(K^2) list builds + K linear scans —
+        # P2-52). duplicate_clip_to_arrangement places the new clip at `pos`,
+        # which is the key we use to find it once afterward.
+        placements = []  # list of (pos, target_len)
 
         while pos < end_pos:
             track.duplicate_clip_to_arrangement(source_clip, pos)
+            # When loop_length < source_length, only loop_length beats of
+            # content should play per copy; otherwise the copy plays its full
+            # source content (capped at the remaining region).
+            remaining = end_pos - pos
+            target_len = min(loop_length, remaining)
+            placements.append((pos, target_len))
+            clip_count += 1
+            pos += step
 
-            # Find the new clip by position (id()-based detection is unreliable
-            # because CPython can reuse addresses of GC'd LOM wrappers)
+        # Single post-loop pass: one list() materialization, then apply
+        # name/color/loop-region to each placed clip located by start_time.
+        if placements:
             arr_clips = list(track.arrangement_clips)
-            new_clip = None
-            new_clip_idx = None
-            for i, c in enumerate(arr_clips):
-                if abs(c.start_time - pos) < 0.01:
-                    new_clip = c
-                    new_clip_idx = i
-                    break
-
-            if new_clip is not None:
-                if first_clip_index is None:
-                    first_clip_index = new_clip_idx
+            # Index clips by rounded start_time for O(1) lookup.
+            by_start = {}
+            for c in arr_clips:
+                by_start.setdefault(round(c.start_time, 2), c)
+            for place_pos, target_len in placements:
+                new_clip = by_start.get(round(place_pos, 2))
+                if new_clip is None:
+                    continue
                 if name:
                     new_clip.name = name
                 if color_index is not None:
                     new_clip.color_index = int(color_index)
-
-                # When loop_length < source_length, set the internal
-                # loop region so only loop_length beats of content play.
-                remaining = end_pos - pos
-                target_len = min(loop_length, remaining)
                 if target_len < source_length:
                     try:
                         new_clip.looping = True
@@ -125,15 +151,21 @@ def create_arrangement_clip(song, params):
                     except (AttributeError, RuntimeError):
                         pass
 
-            clip_count += 1
-            pos += loop_length
-
         # Trim the last clip's overshoot: if the last duplicate extends
         # past end_pos, remove notes beyond the requested region and
         # set loop_end so only the needed portion plays.
+        #
+        # Restrict the scan to clips THIS call placed (matched by their
+        # placement start). Scanning all arrangement_clips would also match a
+        # pre-existing clip on the same track that happens to start at/after
+        # start_time and end past end_pos — trimming/removing notes from the
+        # user's existing content (silent data loss).
         if clip_count > 0:
+            placed_starts = {round(p, 2) for p, _ in placements}
             arr_clips = list(track.arrangement_clips)
             for c in arr_clips:
+                if round(c.start_time, 2) not in placed_starts:
+                    continue
                 clip_end = c.start_time + c.length
                 if c.start_time >= start_time and clip_end > end_pos + 0.01:
                     # This clip overshoots — trim its content
@@ -840,14 +872,33 @@ def force_arrangement(song, params):
         song.stop_playing()
 
     # 2. Stop playing clip slots individually to release session overrides
-    #    (track.stop_all_clips() throws STATE_ERROR when tracks have no clips)
-    for track in list(song.tracks) + list(song.return_tracks):
-        try:
-            for slot in track.clip_slots:
-                if slot.has_clip and slot.is_playing:
+    #    (track.stop_all_clips() throws STATE_ERROR when tracks have no clips).
+    #    §9c: a session clip that fails to stop re-asserts the override and
+    #    makes playback start mid-song, so genuine stop failures must NOT be
+    #    silently discarded — collect them and surface to the caller (P2-53).
+    stop_errors = []
+    # Only regular tracks hold session clips. Return tracks (and the master)
+    # cannot have clip slots — iterating their `clip_slots` raises
+    # AttributeError on the Live 12.4.x LOM, which would either crash this
+    # tool or (when guarded) inject one spurious stop-error per return track,
+    # forcing arrangement_active=False on a clean run and breaking the §9c
+    # finalize workflow. Session overrides only ever come from song.tracks.
+    for track_idx, track in enumerate(song.tracks):
+        for slot_idx, slot in enumerate(track.clip_slots):
+            try:
+                # ClipSlot.is_playing is not exposed on every Live build —
+                # guard it (mirrors the defensive read elsewhere in this file)
+                # so a missing attribute isn't logged as a spurious stop-error
+                # for every clip-bearing slot, which would force
+                # arrangement_active=False on a clean run (P2-53).
+                if slot.has_clip and getattr(slot, "is_playing", False):
                     slot.clip.stop()
-        except Exception:
-            pass
+            except Exception as exc:
+                stop_errors.append({
+                    "track": track_idx,
+                    "slot": slot_idx,
+                    "error": str(exc),
+                })
 
     # 3. Global back-to-arranger
     song.back_to_arranger = True
@@ -867,12 +918,21 @@ def force_arrangement(song, params):
     if play:
         song.start_playing()
 
-    return {
-        "arrangement_active": True,
+    # A clip that failed to stop may still be overriding the arrangement, so
+    # report partial failure rather than claiming unconditional success (P2-53).
+    result = {
+        "arrangement_active": not stop_errors,
         "position": song.current_song_time,
         "is_playing": song.is_playing,
         "loop": song.loop,
+        "stop_errors": stop_errors,
     }
+    if stop_errors:
+        result["warning"] = (
+            "%d session clip(s) failed to stop and may still override the "
+            "arrangement — playback could start mid-song" % len(stop_errors)
+        )
+    return result
 
 
 # ── Session-record arrangement automation (T5 workaround) ────────────

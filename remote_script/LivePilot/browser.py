@@ -282,6 +282,10 @@ def load_browser_item(song, params):
                 "loaded": True,
                 "name": found.name,
                 "device_count": device_count,
+                # Live appends the loaded device at the END of the chain, so the
+                # just-loaded device is the last one. The MCP wrapper applies
+                # role-defaults / hygiene to THIS index (see tools/browser.py).
+                "device_index": device_count - 1 if device_count > 0 else 0,
             }
 
     # ── Strategy 2: extract name from URI, search by name ────────────
@@ -337,6 +341,8 @@ def load_browser_item(song, params):
                     "loaded": True,
                     "name": found.name,
                     "device_count": device_count,
+                    # Loaded device is appended last → its index is count-1.
+                    "device_index": device_count - 1 if device_count > 0 else 0,
                 }
 
         raise ValueError(
@@ -394,6 +400,10 @@ def load_browser_item(song, params):
                 "loaded": True,
                 "name": found.name,
                 "device_count": device_count,
+                # Live appends the loaded device at the END of the chain, so the
+                # just-loaded device is the last one. The MCP wrapper applies
+                # role-defaults / hygiene to THIS index (see tools/browser.py).
+                "device_index": device_count - 1 if device_count > 0 else 0,
             }
 
     raise ValueError(

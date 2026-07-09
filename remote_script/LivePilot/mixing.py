@@ -498,10 +498,22 @@ def set_compressor_sidechain(song, params):
     if want_type:
         available = surface["types"]
         matched = None
+        # Exact display-name match first — preserves the "1-KICK" contract.
         for rt in available:
             if rt.display_name == source_type:
                 matched = rt
                 break
+        # Tolerant fallback: callers (e.g. the semantic-move compilers) may
+        # pass a BARE track name ("Kick") while Live's routing menu is
+        # index-prefixed ("1-Kick"). Resolve when a display name ends with
+        # "-<name>" so a bare name still matches without the caller guessing
+        # Live's 1-based numbering.
+        if matched is None:
+            suffix = "-" + str(source_type)
+            for rt in available:
+                if rt.display_name.endswith(suffix):
+                    matched = rt
+                    break
         if matched is None:
             options = [rt.display_name for rt in available]
             raise ValueError(

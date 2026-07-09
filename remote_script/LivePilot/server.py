@@ -74,6 +74,7 @@ WRITE_COMMAND_PREFIXES = (
     "arrangement_automation_",
     "assign_",
     "back_to_",
+    "batch_",
     "capture_",
     "cleanup_",
     "clear_",
@@ -125,6 +126,26 @@ def is_write_command(command_type):
 SLOW_WRITE_COMMANDS = frozenset([
     "freeze_track",
 ])
+
+
+class _CmdState(object):
+    """Shared cancel/commit state for one queued command.
+
+    The TCP thread (which waits for the response and may time out) and the
+    main thread (which dispatches the command) both touch this object. The
+    lock makes "cancel" and "commit" mutually exclusive so they cannot race:
+    a write is either cancelled BEFORE the main thread commits to dispatching
+    it (so it never runs — no phantom mutation after a reported TIMEOUT), or
+    the main thread commits first (so a late timeout cannot cancel a write
+    that is already going to run). The two flags can never both be True.
+    """
+
+    __slots__ = ("lock", "cancelled", "committed")
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.cancelled = False
+        self.committed = False
 
 
 class LivePilotServer(object):
@@ -292,9 +313,25 @@ class LivePilotServer(object):
                 if not data:
                     break
                 buf.extend(data)
-                if len(buf) > MAX_BUF:
-                    self._log("Client buffer overflow — disconnecting")
-                    break
+                if len(buf) > MAX_BUF and buf.find(b"\n") < 0:
+                    # A single request line exceeded MAX_BUF with no framing
+                    # newline. Emit a structured error (mirroring the
+                    # UnicodeDecodeError branch below) and resynchronize the
+                    # stream by dropping the oversized buffer, rather than a
+                    # bare disconnect the client can't distinguish from a
+                    # crash or stolen socket.
+                    self._log("Request line exceeded %d bytes — dropping" % MAX_BUF)
+                    del buf[:]
+                    self._send(client, {
+                        "id": "unknown",
+                        "ok": False,
+                        "error": {
+                            "code": "INVALID_PARAM",
+                            "message": "Request line exceeded %d bytes "
+                                       "without a newline" % MAX_BUF,
+                        },
+                    })
+                    continue
                 while True:
                     nl = buf.find(b"\n")
                     if nl < 0:
@@ -352,8 +389,8 @@ class LivePilotServer(object):
         # (now-abandoned) dispatch instead of mutating Live after the client
         # has already been told the command timed out (phantom write).
         response_queue = queue.Queue()
-        cancelled = threading.Event()
-        self._command_queue.put((command, response_queue, cancelled))
+        state = _CmdState()
+        self._command_queue.put((command, response_queue, state))
 
         # Schedule processing on Ableton's main thread
         try:
@@ -390,13 +427,17 @@ class LivePilotServer(object):
         try:
             resp = response_queue.get(timeout=timeout)
         except queue.Empty:
-            # Mark the queued command as abandoned. If it hasn't been dequeued
-            # yet (or is awaiting its settle hop), _process_next_command sees
-            # the flag and skips router.dispatch — preventing a write that the
-            # client was just told timed out from executing on Live's main
-            # thread later. If dispatch already happened, setting the flag is
-            # a harmless no-op.
-            cancelled.set()
+            # Abandon the queued command — but ATOMICALLY. We only mark it
+            # cancelled if the main thread has not already committed to
+            # dispatching it. Holding state.lock across the check+set makes
+            # this mutually exclusive with _process_next_command's commit, so
+            # there is no window where a write dispatches even though the TCP
+            # thread intended to cancel it. If the main thread already
+            # committed (committed is True), the write is legitimately in
+            # flight and we simply report the timeout without cancelling.
+            with state.lock:
+                if not state.committed:
+                    state.cancelled = True
             resp = {
                 "id": request_id,
                 "ok": False,
@@ -411,17 +452,22 @@ class LivePilotServer(object):
         """Called on Ableton's main thread via schedule_message.
         Processes one command from the queue."""
         try:
-            command, response_queue, cancelled = self._command_queue.get_nowait()
+            command, response_queue, state = self._command_queue.get_nowait()
         except queue.Empty:
             return
 
-        # The TCP thread already gave up on this command (timed out) and told
-        # the client so. Do NOT dispatch it — running the write now would be a
-        # phantom mutation. Nobody is waiting on response_queue, so just keep
-        # the main-thread pump alive by draining whatever is left.
-        if cancelled.is_set():
-            self._drain_queue()
-            return
+        # Atomically decide whether to run this command. If the TCP thread
+        # already gave up (timed out) and cancelled it, skip the dispatch —
+        # running the write now would be a phantom mutation after the client
+        # was told TIMEOUT. Otherwise mark it committed UNDER THE SAME LOCK so
+        # a concurrent timeout cannot cancel a write that is about to run.
+        # Once committed is True, state.cancelled can never become True, so
+        # the settle-hop send_response below always targets a live decision.
+        with state.lock:
+            if state.cancelled:
+                self._drain_queue()
+                return
+            state.committed = True
 
         cmd_type = command.get("type", "")
         is_write = is_write_command(cmd_type)
@@ -429,7 +475,16 @@ class LivePilotServer(object):
         try:
             song = self._cs.song()
             result = router.dispatch(song, command)
-        except Exception as exc:
+        except BaseException as exc:
+            # P3-41: catch BaseException, not just Exception. If a handler
+            # raised a non-Exception BaseException (SystemExit / KeyboardInterrupt
+            # / GeneratorExit), `result` would never be assigned, the response/
+            # drain block below would never run, and the TCP thread would hang
+            # on response_queue.get() to its full timeout WHILE the command queue
+            # stalls. Converting any dispatch failure into a structured INTERNAL
+            # result guarantees the caller is unblocked and the queue advances.
+            # (Ableton's embedded main-thread processor has no legitimate
+            # SystemExit/KeyboardInterrupt to propagate.)
             result = {
                 "id": command.get("id", "unknown"),
                 "ok": False,

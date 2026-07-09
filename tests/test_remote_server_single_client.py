@@ -185,6 +185,56 @@ def test_write_command_classifier_catches_newer_mutating_handlers():
         assert not server_mod.is_write_command(command), command
 
 
+def test_undo_redo_batch_classify_as_write():
+    """undo / redo / batch_set_parameters genuinely mutate Live and MUST be
+    write-classified so they receive the write timeout + 100ms settle delay.
+
+    Regression guard for P2-48: these three handlers match no READ prefix and
+    survive only via the explicit WRITE_COMMANDS set (undo/redo) or the
+    ``batch_`` write prefix (batch_set_parameters). A future trim of
+    WRITE_COMMANDS must not silently drop them to read-tier, which would
+    reintroduce the read-after-write race the settle delay prevents.
+    """
+    server_mod = _load_server_module()
+    for command in ("undo", "redo", "batch_set_parameters"):
+        assert server_mod.is_write_command(command), command
+
+
+def test_oversize_line_without_newline_emits_invalid_param():
+    """A request line larger than MAX_BUF with no newline must emit a
+    structured INVALID_PARAM and resynchronize the stream — not a bare
+    disconnect the client can't distinguish from a crash (P2-47).
+    """
+    server_mod = _load_server_module()
+    server = server_mod.LivePilotServer(_FakeControlSurface(), port=0)
+    server._running = True
+
+    class _OversizeClient:
+        """Feeds one >4MB newline-less chunk, then EOF to end the loop."""
+
+        def __init__(self):
+            self.payloads = []
+            self._chunks = [b"x" * (4 * 1024 * 1024 + 16), b""]
+
+        def settimeout(self, _timeout):
+            return None
+
+        def recv(self, _bufsize):
+            return self._chunks.pop(0)
+
+        def sendall(self, payload):
+            self.payloads.append(payload.decode("utf-8"))
+
+    client = _OversizeClient()
+    server._handle_client(client)
+
+    assert client.payloads, "oversize line should produce a structured error"
+    response = json.loads(client.payloads[0].strip())
+    assert response["ok"] is False
+    assert response["error"]["code"] == "INVALID_PARAM"
+    assert "newline" in response["error"]["message"]
+
+
 def test_schedule_message_disconnect_sends_state_error():
     server_mod = _load_server_module()
 
@@ -247,11 +297,11 @@ def test_timed_out_command_is_not_dispatched():
 
     command = {"id": "z1", "type": "set_track_volume"}
     response_queue = _queue.Queue()
-    cancelled = _threading.Event()
+    state = server_mod._CmdState()
     # Simulate the post-timeout state: the command is queued and already marked
     # abandoned by the TCP thread.
-    cancelled.set()
-    server._command_queue.put((command, response_queue, cancelled))
+    state.cancelled = True
+    server._command_queue.put((command, response_queue, state))
 
     # Main thread pass runs after the timeout.
     server._process_next_command()
@@ -289,8 +339,8 @@ def test_live_command_still_dispatches():
 
     command = {"id": "z2", "type": "set_track_volume"}
     response_queue = _queue.Queue()
-    cancelled = _threading.Event()  # not set
-    server._command_queue.put((command, response_queue, cancelled))
+    state = server_mod._CmdState()  # not cancelled
+    server._command_queue.put((command, response_queue, state))
 
     server._process_next_command()
 
