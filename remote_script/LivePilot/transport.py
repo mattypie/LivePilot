@@ -30,6 +30,17 @@ def get_session_info(song, params):
             track_data["arm"] = None
             track_data["has_midi_input"] = None
             track_data["has_audio_input"] = None
+        # P2-21: semantic-move compilers (mix/sound-design/transition) need
+        # each track's CURRENT volume to compile RELATIVE nudges instead of
+        # absolute overwrites — e.g. "make it punchier" must not slam a
+        # hot drum bus down to a flat level. Guarded the same way as the
+        # arm/has_midi_input/has_audio_input block above: some track types
+        # (or older test doubles) may not expose mixer_device at all, and
+        # that must degrade to None rather than aborting the whole scan.
+        try:
+            track_data["volume"] = track.mixer_device.volume.value
+        except Exception:
+            track_data["volume"] = None
         tracks_info.append(track_data)
 
     return_tracks_info = []

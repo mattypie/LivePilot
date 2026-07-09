@@ -86,25 +86,33 @@ def _compile_make_punchier(move: SemanticMove, kernel: dict) -> CompiledPlan:
         verify_after=False,
     ))
 
-    # Step 2: Push drum volume
+    # Step 2: Push drum volume — RELATIVE nudge (P2-21), not an absolute
+    # overwrite. A hot drum bus must get louder, not slammed down to 0.75.
     for dt in drum_tracks[:1]:  # Only first drum track
         idx = dt["index"]
+        target = resolvers.compile_relative_volume(
+            dt.get("volume"), 8, cap=0.85, fallback=0.75
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": idx, "volume": 0.75},
-            description=f"Push {dt['name']} (track {idx}) to 0.75 for transient punch",
+            params={"track_index": idx, "volume": target},
+            description=f"Push {dt['name']} (track {idx}) to {target:.2f} for transient punch",
         ))
-        descriptions.append(f"Push {dt['name']} volume to 0.75")
+        descriptions.append(f"Push {dt['name']} volume to {target:.2f}")
 
-    # Step 3: Pull back pads
+    # Step 3: Pull back pads — RELATIVE nudge, floored so a quiet pad
+    # doesn't get muted outright.
     for pt in pad_tracks:
         idx = pt["index"]
+        target = resolvers.compile_relative_volume(
+            pt.get("volume"), -10, floor=0.15, fallback=0.25
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": idx, "volume": 0.25},
-            description=f"Pull {pt['name']} (track {idx}) to 0.25 for contrast",
+            params={"track_index": idx, "volume": target},
+            description=f"Pull {pt['name']} (track {idx}) to {target:.2f} for contrast",
         ))
-        descriptions.append(f"Pull {pt['name']} volume to 0.25")
+        descriptions.append(f"Pull {pt['name']} volume to {target:.2f}")
 
     # Step 4: Verify
     steps.append(CompiledStep(
@@ -161,13 +169,17 @@ def _compile_tighten_low_end(move: SemanticMove, kernel: dict) -> CompiledPlan:
         optional=True,
     ))
 
-    # Step 2: Reduce bass volume slightly
+    # Step 2: Reduce bass volume slightly — RELATIVE nudge (P2-21), floored
+    # so a bass already sitting quiet doesn't get pulled toward silence.
+    target = resolvers.compile_relative_volume(
+        bass.get("volume"), -10, floor=0.35, fallback=0.58
+    )
     steps.append(CompiledStep(
         tool="set_track_volume",
-        params={"track_index": idx, "volume": 0.58},
-        description=f"Reduce {bass['name']} volume to 0.58 (tighten sub)",
+        params={"track_index": idx, "volume": target},
+        description=f"Reduce {bass['name']} volume to {target:.2f} (tighten sub)",
     ))
-    descriptions.append(f"Reduce {bass['name']} volume to 0.58")
+    descriptions.append(f"Reduce {bass['name']} volume to {target:.2f}")
 
     # Step 3: Verify
     steps.append(CompiledStep(
@@ -308,13 +320,17 @@ def _compile_darken_mix(move: SemanticMove, kernel: dict) -> CompiledPlan:
     bright_tracks = resolvers.find_tracks_by_role(kernel, ["lead", "chords", "percussion"])
 
     for bt in bright_tracks[:2]:  # Max 2 tracks
-        # Reduce volume slightly to darken
+        # Reduce volume slightly to darken — RELATIVE nudge (P2-21), floored
+        # so an already-quiet bright track doesn't get pulled to silence.
+        target = resolvers.compile_relative_volume(
+            bt.get("volume"), -10, floor=0.20, fallback=0.40
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": bt["index"], "volume": 0.40},
-            description=f"Pull {bt['name']} to 0.40 for darker tone",
+            params={"track_index": bt["index"], "volume": target},
+            description=f"Pull {bt['name']} to {target:.2f} for darker tone",
         ))
-        descriptions.append(f"Darken {bt['name']} to 0.40")
+        descriptions.append(f"Darken {bt['name']} to {target:.2f}")
 
     steps.append(CompiledStep(
         tool="get_track_meters",
@@ -568,23 +584,31 @@ def _compile_create_buildup_tension(move: SemanticMove, kernel: dict) -> Compile
     if not perc_tracks and not harmony_tracks:
         warnings.append("No percussion or harmony tracks found — cannot build tension")
 
-    # Raise perc for energy
+    # Raise perc for energy — RELATIVE nudge (P2-21), capped so an already
+    # hot perc bus doesn't clip.
     for pt in perc_tracks[:1]:
+        target = resolvers.compile_relative_volume(
+            pt.get("volume"), 10, cap=0.90, fallback=0.78
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": pt["index"], "volume": 0.78},
-            description=f"Push {pt['name']} to 0.78 for rising energy",
+            params={"track_index": pt["index"], "volume": target},
+            description=f"Push {pt['name']} to {target:.2f} for rising energy",
         ))
-        descriptions.append(f"Push {pt['name']} to 0.78")
+        descriptions.append(f"Push {pt['name']} to {target:.2f}")
 
-    # Pull harmony slightly to amplify perc contrast
+    # Pull harmony slightly to amplify perc contrast — RELATIVE nudge,
+    # floored so a quiet harmony bed doesn't get pulled to silence.
     for ht in harmony_tracks[:1]:
+        target = resolvers.compile_relative_volume(
+            ht.get("volume"), -12, floor=0.20, fallback=0.35
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": ht["index"], "volume": 0.35},
-            description=f"Pull {ht['name']} to 0.35 to create harmonic vacuum before drop",
+            params={"track_index": ht["index"], "volume": target},
+            description=f"Pull {ht['name']} to {target:.2f} to create harmonic vacuum before drop",
         ))
-        descriptions.append(f"Pull {ht['name']} to 0.35")
+        descriptions.append(f"Pull {ht['name']} to {target:.2f}")
 
     steps.append(CompiledStep(
         tool="get_track_meters",

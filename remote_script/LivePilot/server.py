@@ -60,6 +60,18 @@ WRITE_COMMANDS = frozenset([
     "clear_clip_automation",
 ])
 
+# P2-48 backstop: "undo"/"redo" are bare verbs — no read/write prefix applies
+# to them, so they only ever classified as writes via the literals inside
+# WRITE_COMMANDS above. If a future WRITE_COMMANDS trim ever dropped them
+# (e.g. a well-intentioned dedupe pass), is_write_command() would silently
+# reclassify genuinely-mutating commands as reads, reintroducing the
+# read-after-write race the settle delay exists to prevent. This frozenset is
+# checked independently of WRITE_COMMANDS so that can't happen silently.
+WRITE_BARE_VERBS = frozenset([
+    "undo",
+    "redo",
+])
+
 # Future-safe write detection. WRITE_COMMANDS remains the explicit allow-list
 # for older handlers and readability; the prefix classifier catches newer
 # mutating handlers so they still receive the write timeout and settle delay.
@@ -113,6 +125,9 @@ WRITE_COMMAND_PREFIXES = (
 
 def is_write_command(command_type):
     """Return True if a command is expected to mutate Live state."""
+    # Checked first and independent of WRITE_COMMANDS — see WRITE_BARE_VERBS.
+    if command_type in WRITE_BARE_VERBS:
+        return True
     if command_type in WRITE_COMMANDS:
         return True
     if command_type in READ_ONLY_COMMANDS:

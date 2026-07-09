@@ -23,10 +23,15 @@ def _compile_increase_forward_motion(move: SemanticMove, kernel: dict) -> Compil
     drums = resolvers.find_tracks_by_role(kernel, ["drums", "percussion"])
 
     for dt in drums[:1]:
+        # RELATIVE nudge (P2-21), capped so an already-hot drum bus isn't
+        # pushed toward clip.
+        target = resolvers.compile_relative_volume(
+            dt.get("volume"), 8, cap=0.85, fallback=0.75
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": dt["index"], "volume": 0.75},
-            description=f"Push {dt['name']} to 0.75 for forward drive",
+            params={"track_index": dt["index"], "volume": target},
+            description=f"Push {dt['name']} to {target:.2f} for forward drive",
         ))
         descriptions.append(f"Push {dt['name']} forward")
 
@@ -66,12 +71,16 @@ def _compile_open_chorus(move: SemanticMove, kernel: dict) -> CompiledPlan:
     melodic = resolvers.find_tracks_by_role(kernel, ["chords", "lead", "pad"])
     drums = resolvers.find_tracks_by_role(kernel, ["drums"])
 
-    # Push all melodic tracks
+    # Push all melodic tracks — RELATIVE nudge (P2-21), capped so an
+    # already-hot track isn't pushed toward clip.
     for mt in melodic:
+        target = resolvers.compile_relative_volume(
+            mt.get("volume"), 8, cap=0.85, fallback=0.75
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": mt["index"], "volume": 0.75},
-            description=f"Push {mt['name']} to 0.75 for chorus energy",
+            params={"track_index": mt["index"], "volume": target},
+            description=f"Push {mt['name']} to {target:.2f} for chorus energy",
         ))
         descriptions.append(f"Push {mt['name']}")
 
@@ -126,18 +135,26 @@ def _compile_create_breakdown(move: SemanticMove, kernel: dict) -> CompiledPlan:
     pads = resolvers.find_tracks_by_role(kernel, ["pad"])
 
     for dt in drums:
+        # RELATIVE nudge (P2-21), floored so an already-quiet drum bus
+        # doesn't get pulled to silence.
+        target = resolvers.compile_relative_volume(
+            dt.get("volume"), -15, floor=0.15, fallback=0.25
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": dt["index"], "volume": 0.25},
-            description=f"Strip {dt['name']} to 0.25 for breakdown",
+            params={"track_index": dt["index"], "volume": target},
+            description=f"Strip {dt['name']} to {target:.2f} for breakdown",
         ))
         descriptions.append(f"Strip {dt['name']}")
 
     for bt in bass[:1]:
+        target = resolvers.compile_relative_volume(
+            bt.get("volume"), -12, floor=0.20, fallback=0.30
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": bt["index"], "volume": 0.30},
-            description=f"Reduce {bt['name']} to 0.30",
+            params={"track_index": bt["index"], "volume": target},
+            description=f"Reduce {bt['name']} to {target:.2f}",
         ))
         descriptions.append(f"Reduce {bt['name']}")
 

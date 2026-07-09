@@ -124,3 +124,48 @@ def adjust_volume(current: float, delta_percent: float) -> float:
     """Adjust a volume by a percentage. delta_percent=5 means +5%."""
     new = current + (delta_percent / 100.0)
     return clamp_volume(new)
+
+
+def compile_relative_volume(
+    current: Optional[float],
+    delta_percent: float,
+    *,
+    cap: Optional[float] = None,
+    floor: Optional[float] = None,
+    fallback: float,
+) -> float:
+    """Compile a bounded RELATIVE volume nudge from a track's current level.
+
+    P2-21 fix: mix/sound-design/transition compilers used to write an
+    ABSOLUTE volume regardless of what was already on the track — e.g.
+    "make it punchier" could turn a hot drum bus DOWN by blindly writing
+    a flat 0.75. This computes current + delta_percent% instead (via
+    adjust_volume), then clamps to an optional cap/floor so the move's
+    musical intent (push toward louder / pull toward quieter) still holds
+    even when starting from an unusual level.
+
+    `current` is None when the connected Remote Script predates the
+    `volume` field in get_session_info (see transport.py get_session_info)
+    — in that case this falls back to the historical absolute value so
+    the compiler degrades gracefully instead of crashing or guessing.
+
+    The cap/floor bound the SIZE of the nudge — they must never flip its
+    DIRECTION. A track already louder than `cap` must not get pulled back
+    down to the cap when the move means to push it UP (that would
+    reintroduce the P2-21 bug in a smaller way); symmetrically a track
+    already quieter than `floor` must not get nudged back UP when the
+    move means to pull it DOWN. So after clamping to [floor, cap], the
+    result is re-clamped against `current` in the direction of travel.
+    """
+    if current is None:
+        return fallback
+    target = adjust_volume(current, delta_percent)
+    if cap is not None:
+        target = min(target, cap)
+    if floor is not None:
+        target = max(target, floor)
+    if delta_percent > 0:
+        target = max(target, current)
+    elif delta_percent < 0:
+        target = min(target, current)
+    return clamp_volume(target)

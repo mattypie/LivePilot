@@ -33,11 +33,15 @@ def _compile_add_warmth(move: SemanticMove, kernel: dict) -> CompiledPlan:
         idx = t["index"]
         name = t["name"]
 
-        # Boost volume slightly for perceived warmth
+        # Boost volume slightly for perceived warmth — RELATIVE nudge
+        # (P2-21), capped so an already-hot track isn't pushed toward clip.
+        target = resolvers.compile_relative_volume(
+            t.get("volume"), 6, cap=0.80, fallback=0.65
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": idx, "volume": 0.65},
-            description=f"Boost {name} slightly for warmth",
+            params={"track_index": idx, "volume": target},
+            description=f"Boost {name} to {target:.2f} for warmth",
         ))
 
         # Add reverb send for depth/warmth perception
@@ -138,11 +142,15 @@ def _compile_shape_transients(move: SemanticMove, kernel: dict) -> CompiledPlan:
         idx = dt["index"]
         name = dt["name"]
 
-        # Push volume for transient punch
+        # Push volume for transient punch — RELATIVE nudge (P2-21), capped
+        # so an already-hot drum bus isn't pushed toward clip.
+        target = resolvers.compile_relative_volume(
+            dt.get("volume"), 8, cap=0.85, fallback=0.75
+        )
         steps.append(CompiledStep(
             tool="set_track_volume",
-            params={"track_index": idx, "volume": 0.75},
-            description=f"Push {name} to 0.75 for transient punch",
+            params={"track_index": idx, "volume": target},
+            description=f"Push {name} to {target:.2f} for transient punch",
         ))
         descriptions.append(f"Push {name} for punch")
 
