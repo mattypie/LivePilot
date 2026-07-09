@@ -357,6 +357,12 @@ class _FakeAbletonFull:
             return {"ok": True}
         return {}
 
+    async def send_command_async(self, name: str, params: dict) -> dict:
+        # Mirrors AbletonConnection.send_command_async — offloads to the same
+        # synchronous send_command (via a thread) so fakes stay a single
+        # source of truth for recorded calls/return shapes.
+        return await asyncio.to_thread(self.send_command, name, params)
+
 
 class _FakeCtxFull:
     def __init__(self, ableton):

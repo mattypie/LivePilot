@@ -524,7 +524,7 @@ async def render_preview_variant(
 
         try:
             # ── 1. Capture BEFORE metadata ──
-            before_info = ableton.send_command("get_session_info", {}) or {}
+            before_info = await ableton.send_command_async("get_session_info", {}) or {}
 
             # ── 2. Apply the variant (write steps only) ──
             exec_results = await execute_plan_steps_async(
@@ -550,7 +550,7 @@ async def render_preview_variant(
                 }
 
             # ── 3. Capture AFTER metadata (variant is live) ──
-            after_info = ableton.send_command("get_session_info", {}) or {}
+            after_info = await ableton.send_command_async("get_session_info", {}) or {}
 
             # ── 4. Audible capture WHILE variant is still applied ──
             # This is the critical ordering fix: previously this block ran AFTER
@@ -566,7 +566,7 @@ async def render_preview_variant(
                     tempo = before_info.get("tempo", 120) or 120
                     play_seconds = min(bars * (60.0 / tempo) * 4, 8.0)
 
-                    ableton.send_command("start_playback", {})
+                    await ableton.send_command_async("start_playback", {})
                     playback_started = True
 
                     import asyncio as _asyncio
@@ -575,7 +575,7 @@ async def render_preview_variant(
 
                     spectral_after = cache.get_all()
 
-                    ableton.send_command("stop_playback", {})
+                    await ableton.send_command_async("stop_playback", {})
                     playback_started = False
 
                     preview_mode = "audible_preview"
@@ -590,13 +590,13 @@ async def render_preview_variant(
             # ── 5. Cleanup: stop playback if still running, then undo everything ──
             if playback_started:
                 try:
-                    ableton.send_command("stop_playback", {})
+                    await ableton.send_command_async("stop_playback", {})
                 except Exception as exc:
                     logger.debug("render_preview_variant failed: %s", exc)
 
             for _ in range(undo_count):
                 try:
-                    ableton.send_command("undo")
+                    await ableton.send_command_async("undo")
                 except Exception as exc:
                     logger.debug("render_preview_variant failed: %s", exc)
                     break

@@ -279,54 +279,110 @@ class TestCompressorSetSidechain:
 
 
 # ── Whole-file guard: no async tool may block on ableton.send_command ───────
+#
+# Historically this guard only scanned mcp_server/tools/analyzer.py for direct
+# `ableton.send_command(...)` calls. The 2026-07 event-loop sweep found (and
+# fixed) the same bug class scattered across ~20 files in mcp_server/ — some
+# direct, some one hop away through a same-file sync helper — plus adjacent
+# blocking primitives (file I/O, subprocess). The generalized guard below
+# reuses the transitive AST scanner built for that sweep
+# (`scripts/scan_async_blocking.py`) so the whole tree is covered going
+# forward, not just the one file that happened to regress before.
+
+
+def _format_violations(violations) -> str:
+    lines = []
+    for v in violations:
+        if v.kind == "direct":
+            lines.append(
+                f"{v.file}:{v.lineno}: async def {v.func_name}() -> "
+                f"direct unwrapped {v.detail}"
+            )
+        else:
+            lines.append(
+                f"{v.file}:{v.lineno}: async def {v.func_name}() -> calls helper "
+                f"{v.helper_name}() (line {v.helper_lineno}) which has unwrapped "
+                f"{v.detail}"
+            )
+    return "\n".join(lines)
 
 
 def test_analyzer_async_tools_never_call_send_command_on_the_loop():
-    """Every `async def` in mcp_server/tools/analyzer.py must offload the
-    synchronous TCP client via `asyncio.to_thread(ableton.send_command, ...)`.
+    """Regression guard for the 2026-06-24 ultrareview analyzer.py sweep,
+    subsumed by (and kept passing under) the general tree-wide guard below.
 
-    A direct `ableton.send_command(...)` call inside an async tool blocks the
-    single asyncio event loop for the whole round-trip (up to RECV_TIMEOUT),
-    freezing every concurrent handler + the analyzer bridge. When offloaded,
-    `ableton.send_command` is passed to `to_thread` as a *reference* (an
-    ast.Attribute), so it is no longer a Call node — this AST scan therefore
-    flags only the blocking form. Plain (sync) `def` tools are exempt: FastMCP
-    runs them in its worker threadpool. Regression guard for the 2026-06-24
-    ultrareview analyzer.py event-loop sweep.
+    Every `async def` in mcp_server/tools/analyzer.py must offload the
+    synchronous TCP client — direct `ableton.send_command(...)` calls block
+    the single asyncio event loop for the whole round-trip (up to
+    RECV_TIMEOUT), freezing every concurrent handler + the analyzer bridge.
     """
-    import ast
     from pathlib import Path
+
+    from scripts.scan_async_blocking import scan_file
 
     analyzer = (
         Path(__file__).resolve().parents[1] / "mcp_server" / "tools" / "analyzer.py"
     )
-    tree = ast.parse(analyzer.read_text())
-    offenders: list[tuple[str, int]] = []
+    violations = scan_file(analyzer)
+    assert not violations, (
+        "async analyzer tools must offload blocking calls off the event loop "
+        f"(via asyncio.to_thread / send_command_async). Offenders:\n"
+        f"{_format_violations(violations)}"
+    )
 
-    def _is_ableton_send(call: ast.Call) -> bool:
-        f = call.func
-        return (
-            isinstance(f, ast.Attribute)
-            and f.attr == "send_command"
-            and isinstance(f.value, ast.Name)
-            and f.value.id == "ableton"
+
+def test_all_mcp_server_async_tools_never_block_the_event_loop():
+    """Tree-wide regression guard for the "blocking call on the event loop"
+    bug class across ALL of mcp_server/.
+
+    Walks every `.py` file under `mcp_server/` (skipping `__pycache__` and
+    `mcp_server/splice_client/protos`, which are generated/vendored) and
+    flags, inside every `async def`:
+
+      * direct `ableton.send_command(...)` / `<conn>.send_command(...)` calls
+        where the receiver reads as an AbletonConnection (ableton/conn/
+        connection — NOT bridge/m4l/spectral, which are already async-native
+        and must never be wrapped in `to_thread`),
+      * `Path.write_bytes` / `write_text` / `read_bytes` / `read_text` /
+        `mkdir` file I/O,
+      * `subprocess.run` / `call` / `check_call` / `check_output` / `Popen`,
+
+    unless the call is passed as a *reference* into `asyncio.to_thread(...)`
+    or `loop.run_in_executor(...)`, or the wrapper `send_command_async(...)`
+    is used directly. Also catches the one-hop case: a plain `def` helper
+    containing a flagged call, invoked bare (not through `to_thread`) from an
+    `async def` in the same file.
+
+    A hit here means some concurrent MCP tool call — and the UDP analyzer
+    bridge — can freeze for the duration of a blocking round-trip. See
+    `scripts/scan_async_blocking.py` for the full scanner implementation
+    (reused here, not reimplemented) and its module docstring for the
+    exemption rules in detail.
+    """
+    from pathlib import Path
+
+    from scripts.scan_async_blocking import scan_file
+
+    repo_root = Path(__file__).resolve().parents[1]
+    mcp_server_root = repo_root / "mcp_server"
+
+    def _is_skipped(path: Path) -> bool:
+        parts = path.relative_to(mcp_server_root).parts
+        return "__pycache__" in parts or parts[: len(("splice_client", "protos"))] == (
+            "splice_client",
+            "protos",
         )
 
-    def _walk(node, in_async: bool, fname: str) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.AsyncFunctionDef):
-                _walk(child, True, child.name)
-            elif isinstance(child, ast.FunctionDef):
-                # A nested/plain sync def resets the async context — sync tools
-                # are threadpooled, so a blocking call there does not pin the loop.
-                _walk(child, False, child.name)
-            else:
-                if in_async and isinstance(child, ast.Call) and _is_ableton_send(child):
-                    offenders.append((fname, child.lineno))
-                _walk(child, in_async, fname)
+    violations: list = []
+    for path in sorted(mcp_server_root.rglob("*.py")):
+        if _is_skipped(path):
+            continue
+        violations.extend(scan_file(path))
 
-    _walk(tree, False, "<module>")
-    assert not offenders, (
-        "async analyzer tools must wrap ableton.send_command in "
-        f"asyncio.to_thread (blocks the event loop otherwise). Offenders: {offenders}"
+    assert not violations, (
+        "found blocking call(s) reachable from an `async def` in mcp_server/ "
+        "that are not offloaded off the event loop. Fix with "
+        "`await <ableton>.send_command_async(...)` or "
+        "`await asyncio.to_thread(...)`. Offenders:\n"
+        f"{_format_violations(violations)}"
     )

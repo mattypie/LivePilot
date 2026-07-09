@@ -91,7 +91,10 @@ async def test_develop_apply_dispatches_to_apply_develop_plan():
         if cmd == "set_clip_name":
             return {"name": args["name"]}
         return {"ok": True}
+    async def send_command_async(cmd, args=None):
+        return send_command(cmd, args)
     ableton.send_command = send_command
+    ableton.send_command_async = send_command_async
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
 

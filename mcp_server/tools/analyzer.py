@@ -140,7 +140,7 @@ async def _try_native_replace_sample(
 
     ctx.lifespan_context.pop("_native_replace_skip_reason", None)
 
-    caps = _live_caps(ctx)
+    caps = await asyncio.to_thread(_live_caps, ctx)
     if not caps.has_replace_sample_native:
         _record_skip("gate_closed: tier=%s (need collaborative/12.4+)" % caps.capability_tier)
         return None
@@ -720,7 +720,7 @@ async def load_sample_to_simpler(
 
     # Live 12.4+: create an empty Simpler via insert_device, then use the
     # native replace_sample path. Skips the dummy-sample bootstrap entirely.
-    caps = _live_caps(ctx)
+    caps = await asyncio.to_thread(_live_caps, ctx)
     native_attempted = False
     fallback_reason = "live_version_below_12_4"
     if caps.has_replace_sample_native:
@@ -875,7 +875,7 @@ async def add_drum_rack_pad(
     # the wrong relative path (..; should've been .) and crashed at
     # runtime with "No module named 'mcp_server._analyzer_engine'".
     ableton = ctx.lifespan_context["ableton"]
-    caps = _live_caps(ctx)
+    caps = await asyncio.to_thread(_live_caps, ctx)
     if not caps.has_replace_sample_native:
         return {
             "ok": False,
@@ -1390,6 +1390,30 @@ async def get_display_values(
 # ── Phase 3: Audio Capture ─────────────────────────────────────────────
 
 
+def _relocate_capture_file(src: str) -> Optional[str]:
+    """Move a bridge-captured audio file into CAPTURE_DIR (blocking file I/O).
+
+    Tries common extensions the bridge might have produced. Returns the
+    new path on success, or None if no matching file was found or the
+    move failed (caller should leave the original path unchanged in the
+    latter case). Run via asyncio.to_thread — never call directly from
+    an async def.
+    """
+    for ext in ("", ".aiff", ".wav", ".aif"):
+        src_path = src + ext if not src.endswith(ext) else src
+        if os.path.isfile(src_path):
+            dst_name = os.path.basename(src_path)
+            dst_path = os.path.join(CAPTURE_DIR, dst_name)
+            try:
+                import shutil
+
+                shutil.move(src_path, dst_path)
+                return dst_path
+            except OSError:
+                return None
+    return None
+
+
 @mcp.tool()
 async def capture_audio(
     ctx: Context,
@@ -1425,7 +1449,7 @@ async def capture_audio(
 
     bridge = _get_m4l(ctx)
     # Ensure captures directory exists before sending to bridge
-    os.makedirs(CAPTURE_DIR, exist_ok=True)
+    await asyncio.to_thread(os.makedirs, CAPTURE_DIR, exist_ok=True)
     duration_ms = duration_seconds * 1000
     result = await bridge.send_capture(
         "capture_audio",
@@ -1436,21 +1460,9 @@ async def capture_audio(
 
     # Move captured file from M4L device directory to CAPTURE_DIR
     if result.get("ok") and result.get("file_path"):
-        src = result["file_path"]
-        # Try common extensions the bridge might produce
-        for ext in ("", ".aiff", ".wav", ".aif"):
-            src_path = src + ext if not src.endswith(ext) else src
-            if os.path.isfile(src_path):
-                dst_name = os.path.basename(src_path)
-                dst_path = os.path.join(CAPTURE_DIR, dst_name)
-                try:
-                    import shutil
-
-                    shutil.move(src_path, dst_path)
-                    result["file_path"] = dst_path
-                except OSError:
-                    pass  # Leave in original location if move fails
-                break
+        new_path = await asyncio.to_thread(_relocate_capture_file, result["file_path"])
+        if new_path:
+            result["file_path"] = new_path
 
     return result
 

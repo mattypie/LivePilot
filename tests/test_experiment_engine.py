@@ -369,6 +369,8 @@ def test_run_branch_async_undo_count_only_remote_steps():
         def send_command(self, tool, params=None):
             self.calls.append((tool, params or {}))
             return {"ok": True}  # no "error" key => success
+        async def send_command_async(self, tool, params=None):
+            return self.send_command(tool, params)
 
     class MockBridge:
         def __init__(self):
@@ -422,6 +424,8 @@ def test_run_branch_async_no_undo_when_only_bridge_steps_succeed():
         def send_command(self, tool, params=None):
             self.calls.append((tool, params or {}))
             return {"ok": True}
+        async def send_command_async(self, tool, params=None):
+            return self.send_command(tool, params)
 
     class MockBridge:
         def send_command(self, command, *args):

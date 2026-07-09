@@ -73,7 +73,7 @@ async def _back_to_arranger(ctx: Any) -> dict:
     if ableton is None:
         return {"ok": False}
     try:
-        return ableton.send_command("back_to_arranger", {})
+        return await ableton.send_command_async("back_to_arranger", {})
     except Exception as exc:
         logger.warning("apply_develop: back_to_arranger failed: %s", exc)
         return {"ok": False}
@@ -148,10 +148,10 @@ async def apply_develop_plan(ctx: Context, plan: dict) -> dict:
     plan_tempo = plan.get("tempo")
     if plan_tempo is not None:
         try:
-            session = ableton.send_command("get_session_info", {})
+            session = await ableton.send_command_async("get_session_info", {})
             current_tempo = float(session.get("tempo", 0.0))
             if abs(current_tempo - float(plan_tempo)) > 0.01:
-                ableton.send_command("set_tempo", {"tempo": float(plan_tempo)})
+                await ableton.send_command_async("set_tempo", {"tempo": float(plan_tempo)})
         except Exception as exc:
             logger.warning("apply_develop: tempo set failed: %s", exc)
 
@@ -171,27 +171,27 @@ async def apply_develop_plan(ctx: Context, plan: dict) -> dict:
         try:
             # Optional sample swap (sample-trigger layers only)
             if sample_uri:
-                ableton.send_command(
+                await ableton.send_command_async(
                     "load_browser_item",
                     {"track_index": track_index, "uri": sample_uri},
                 )
                 sample_swaps += 1
 
             # Create clip
-            ableton.send_command(
+            await ableton.send_command_async(
                 "create_clip",
                 {"track_index": track_index, "clip_index": scene_index, "length": clip_length},
             )
 
             # Add notes (skip if empty — empty clip is a valid drum-dropout pattern)
             if notes:
-                ableton.send_command(
+                await ableton.send_command_async(
                     "add_notes",
                     {"track_index": track_index, "clip_index": scene_index, "notes": notes},
                 )
 
             # Name the clip
-            ableton.send_command(
+            await ableton.send_command_async(
                 "set_clip_name",
                 {"track_index": track_index, "clip_index": scene_index, "name": name},
             )

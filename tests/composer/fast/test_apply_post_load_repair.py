@@ -49,7 +49,11 @@ def _mock_ctx_recording(simpler_params=None):
             return {"device_index": 1, "name": args.get("device_class", "MockDevice")}
         return {"ok": True}
 
+    async def send_command_async(cmd, args=None):
+        return ableton.send_command(cmd, args)
+
     ableton.send_command = send_command
+    ableton.send_command_async = send_command_async
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
     return ctx
@@ -205,7 +209,8 @@ async def test_empty_drum_sampler_detected_as_silent():
     assert silent_warning, f"Expected silent_load_warning on empty DrumCell layer, got: {layer}"
 
 
-def test_drum_role_repair_surfaces_batch_partial_failure():
+@pytest.mark.asyncio
+async def test_drum_role_repair_surfaces_batch_partial_failure():
     """C1 / P2-50: batch_set_parameters now returns a partial-success contract
     ({"ok": False, "failed": M, ...}) instead of raising. _apply_drum_role_repair
     must reflect that — NOT hardcode applied=True — so a failed param surfaces."""
@@ -229,12 +234,16 @@ def test_drum_role_repair_surfaces_batch_partial_failure():
                 }
             return {"ok": True}
 
-    result = _apply_drum_role_repair(_FakeAbleton(), track_index=0)
+        async def send_command_async(self, cmd, args=None):
+            return self.send_command(cmd, args)
+
+    result = await _apply_drum_role_repair(_FakeAbleton(), track_index=0)
     assert result["applied"] is False, "partial batch failure must surface as applied=False"
     assert result["failed"] == 1
 
 
-def test_drum_role_repair_reports_success_on_clean_batch():
+@pytest.mark.asyncio
+async def test_drum_role_repair_reports_success_on_clean_batch():
     """Clean batch (ok=True) → applied=True; pre-P2-50 responses without 'ok'
     default to applied=True for backward compatibility."""
     from mcp_server.composer.fast.apply import _apply_drum_role_repair
@@ -247,6 +256,9 @@ def test_drum_role_repair_reports_success_on_clean_batch():
                 return {"ok": True, "applied": 3, "failed": 0, "parameters": []}
             return {"ok": True}
 
+        async def send_command_async(self, cmd, args=None):
+            return self.send_command(cmd, args)
+
     class _FakeAbletonLegacy:  # pre-P2-50 shape, no "ok" key
         def send_command(self, cmd, args=None):
             if cmd == "get_device_info":
@@ -255,5 +267,8 @@ def test_drum_role_repair_reports_success_on_clean_batch():
                 return {"parameters": []}
             return {"ok": True}
 
-    assert _apply_drum_role_repair(_FakeAbletonOK(), track_index=0)["applied"] is True
-    assert _apply_drum_role_repair(_FakeAbletonLegacy(), track_index=0)["applied"] is True
+        async def send_command_async(self, cmd, args=None):
+            return self.send_command(cmd, args)
+
+    assert (await _apply_drum_role_repair(_FakeAbletonOK(), track_index=0))["applied"] is True
+    assert (await _apply_drum_role_repair(_FakeAbletonLegacy(), track_index=0))["applied"] is True

@@ -123,15 +123,11 @@ async def list_genexpr_templates(
     }
 
 
-@mcp.tool()
-async def install_m4l_device(
-    ctx: Context,
-    source_path: str,
-) -> dict:
-    """Copy a .amxd file to Ableton's User Library.
+def _install_m4l_device_sync(source_path: str) -> dict:
+    """Blocking filesystem work for install_m4l_device (read/mkdir/write).
 
-    Args:
-        source_path: Path to the .amxd file to install
+    Run via asyncio.to_thread from the async tool below so the event loop
+    (and the bridge UDP endpoint) never stalls on disk I/O.
     """
     src = Path(source_path)
     if not src.exists():
@@ -170,3 +166,16 @@ async def install_m4l_device(
         "path": str(dest),
         "hint": "Device now available in Ableton's browser.",
     }
+
+
+@mcp.tool()
+async def install_m4l_device(
+    ctx: Context,
+    source_path: str,
+) -> dict:
+    """Copy a .amxd file to Ableton's User Library.
+
+    Args:
+        source_path: Path to the .amxd file to install
+    """
+    return await asyncio.to_thread(_install_m4l_device_sync, source_path)

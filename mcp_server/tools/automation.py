@@ -7,6 +7,7 @@ engine (curves.py) for musically intelligent automation.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastmcp import Context
@@ -735,7 +736,8 @@ async def set_arrangement_automation_via_session_record(
     if send_index is not None:
         start_params["send_index"] = send_index
 
-    start_result = ableton.send_command(
+    start_result = await asyncio.to_thread(
+        ableton.send_command,
         "arrangement_automation_via_session_record_start",
         start_params,
     )
@@ -750,7 +752,6 @@ async def set_arrangement_automation_via_session_record(
     # Compute sleep: duration_beats * 60/tempo seconds + 0.5s buffer for
     # Live's record-arm latency. Tempo comes back from the start handler
     # (fresh Song.tempo read) so we don't hardcode 120.
-    import asyncio
     tempo = float(start_result.get("tempo") or 120.0)
     if tempo <= 0:
         tempo = 120.0
@@ -773,7 +774,8 @@ async def set_arrangement_automation_via_session_record(
         "duration_beats": duration_beats,
         "cleanup_session_clip": cleanup_session_clip,
     }
-    complete_result = ableton.send_command(
+    complete_result = await asyncio.to_thread(
+        ableton.send_command,
         "arrangement_automation_via_session_record_complete",
         complete_params,
     )

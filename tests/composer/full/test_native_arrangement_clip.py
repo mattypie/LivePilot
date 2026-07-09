@@ -11,7 +11,7 @@ add_arrangement_notes and set internal loop via set_clip_loop.
 """
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 from mcp_server.composer.full.apply import apply_full_plan_v2
 
 
@@ -59,6 +59,7 @@ def _mock_ctx_recording_native():
         return {"ok": True}
 
     ableton.send_command = send_command
+    ableton.send_command_async = AsyncMock(side_effect=send_command)
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
     return ctx

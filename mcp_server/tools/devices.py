@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Optional
 
@@ -945,7 +946,7 @@ async def get_plugin_parameters(
     _validate_track_index(track_index)
     _validate_device_index(device_index)
     cache = _get_spectral(ctx)
-    _require_analyzer(cache)
+    await asyncio.to_thread(_require_analyzer, cache)
     bridge = _get_m4l(ctx)
     return await bridge.send_command("get_plugin_params", track_index, device_index, timeout=20.0)
 
@@ -969,7 +970,7 @@ async def map_plugin_parameter(
     if parameter_index < 0:
         raise ValueError("parameter_index must be >= 0")
     cache = _get_spectral(ctx)
-    _require_analyzer(cache)
+    await asyncio.to_thread(_require_analyzer, cache)
     bridge = _get_m4l(ctx)
     return await bridge.send_command("map_plugin_param", track_index, device_index, parameter_index, timeout=10.0)
 
@@ -989,7 +990,7 @@ async def get_plugin_presets(
     _validate_track_index(track_index)
     _validate_device_index(device_index)
     cache = _get_spectral(ctx)
-    _require_analyzer(cache)
+    await asyncio.to_thread(_require_analyzer, cache)
     bridge = _get_m4l(ctx)
     return await bridge.send_command("get_plugin_presets", track_index, device_index, timeout=15.0)
 

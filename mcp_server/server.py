@@ -205,7 +205,10 @@ async def lifespan(server):
         # Degrade gracefully. The reconnect_bridge tool can retry later
         # if the other instance is stopped.
         import sys
-        holder_info = _identify_port_holder(9880)
+        # _identify_port_holder runs two blocking subprocess.check_output
+        # calls (lsof + ps) — offload so a slow/busy host can't stall the
+        # event loop during startup, same as the neighboring lifespan calls.
+        holder_info = await asyncio.to_thread(_identify_port_holder, 9880)
         print(
             "LivePilot: UDP port 9880 already in use%s — "
             "analyzer/bridge tools unavailable at startup. "

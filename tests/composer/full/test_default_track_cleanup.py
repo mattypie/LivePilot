@@ -1,7 +1,7 @@
 """Tests for default-track auto-cleanup in apply_full_plan_v2 preflight."""
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 from mcp_server.composer.full.apply import apply_full_plan_v2
 
 
@@ -62,6 +62,7 @@ def _mock_ctx_with_default_tracks():
         return {"ok": True}
 
     ableton.send_command = send_command
+    ableton.send_command_async = AsyncMock(side_effect=send_command)
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
     return ctx
@@ -162,6 +163,7 @@ async def test_full_apply_v2_no_cleanup_on_non_fresh_project():
         return {"ok": True}
 
     ableton.send_command = send_command
+    ableton.send_command_async = AsyncMock(side_effect=send_command)
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
 
@@ -258,6 +260,7 @@ async def test_full_apply_v2_does_not_zombie_delete_reused_track():
         return {"ok": True}
 
     ableton.send_command = send_command
+    ableton.send_command_async = AsyncMock(side_effect=send_command)
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
 

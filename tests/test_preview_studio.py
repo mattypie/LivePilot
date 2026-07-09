@@ -257,6 +257,9 @@ def test_render_variant_uses_lifespan_spectral_cache_for_audible_preview(monkeyp
                 return {"tempo": 120, "track_count": 4}
             return {"ok": True}
 
+        async def send_command_async(self, cmd, params=None):
+            return self.send_command(cmd, params)
+
     cache = SpectralCache()
     cache.update("spectrum", {"sub": 0.1})
 
@@ -302,6 +305,9 @@ def test_render_preview_variant_captures_audible_before_undo(monkeypatch):
             if cmd == "get_session_info":
                 return {"tempo": 120, "track_count": 4}
             return {"ok": True}
+
+        async def send_command_async(self, cmd, params=None):
+            return self.send_command(cmd, params)
 
     class _Spectral(SpectralCache):
         def get_all(self):

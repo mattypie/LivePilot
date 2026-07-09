@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -22,13 +23,13 @@ def _is_drum_role(role: str) -> bool:
     return role.lower() in DRUM_ROLES
 
 
-def _detect_silent_load(ableton, track_index: int, device_index: int = 0) -> tuple:
+async def _detect_silent_load(ableton, track_index: int, device_index: int = 0) -> tuple:
     """Detect if the loaded device is silently misconfigured (empty container).
 
     Returns (is_silent: bool, reason: str).
     """
     try:
-        device_info = ableton.send_command("get_device_info", {
+        device_info = await ableton.send_command_async("get_device_info", {
             "track_index": track_index, "device_index": device_index,
         })
     except Exception:
@@ -44,7 +45,7 @@ def _detect_silent_load(ableton, track_index: int, device_index: int = 0) -> tup
     # Simpler with Sample Length near zero
     if class_name == "OriginalSimpler":
         try:
-            params_resp = ableton.send_command("get_device_parameters", {
+            params_resp = await ableton.send_command_async("get_device_parameters", {
                 "track_index": track_index, "device_index": device_index,
             })
             for p in params_resp.get("parameters", []):
@@ -60,7 +61,7 @@ def _detect_silent_load(ableton, track_index: int, device_index: int = 0) -> tup
     return False, ""
 
 
-def _apply_drum_role_repair(ableton, track_index: int, device_index: int = 0) -> dict:
+async def _apply_drum_role_repair(ableton, track_index: int, device_index: int = 0) -> dict:
     """Apply role-default repair to a drum-role layer's instrument.
 
     Defense in depth: load_browser_item's role='drum' silently fails to
@@ -83,7 +84,7 @@ def _apply_drum_role_repair(ableton, track_index: int, device_index: int = 0) ->
     """
     # Detect device class so we apply class-appropriate params
     try:
-        device_info = ableton.send_command("get_device_info", {
+        device_info = await ableton.send_command_async("get_device_info", {
             "track_index": track_index, "device_index": device_index,
         })
         class_name = device_info.get("class_name", "")
@@ -99,7 +100,7 @@ def _apply_drum_role_repair(ableton, track_index: int, device_index: int = 0) ->
         ])
 
     try:
-        result = ableton.send_command("batch_set_parameters", {
+        result = await ableton.send_command_async("batch_set_parameters", {
             "track_index": track_index,
             "device_index": device_index,
             "parameters": params_to_set,
@@ -194,14 +195,14 @@ async def apply_fast_plan(
         logger.debug("fast apply: preflight failed (bridge unavailable): %s", exc)
 
     # Pre-flight: where do new tracks go, and which scene?
-    session = ableton.send_command("get_session_info", {})
+    session = await ableton.send_command_async("get_session_info", {})
     starting_track_count = int(session.get("track_count", 0))
     scene_count = int(session.get("scene_count", 0))
 
     # Optional tempo override
     if plan.get("tempo"):
         try:
-            ableton.send_command("set_tempo", {"tempo": float(plan["tempo"])})
+            await ableton.send_command_async("set_tempo", {"tempo": float(plan["tempo"])})
         except Exception as exc:
             logger.debug("apply: set_tempo failed: %s", exc)
 
@@ -221,7 +222,7 @@ async def apply_fast_plan(
     # returns ("A-Reverb") instead of remembering integer send indices.
     return_name_to_send_index: dict[str, int] = {}
     try:
-        returns_resp = ableton.send_command("get_return_tracks", {}) or {}
+        returns_resp = await ableton.send_command_async("get_return_tracks", {}) or {}
         for i, rt in enumerate(returns_resp.get("return_tracks", []) or []):
             name = (rt.get("name") or "").strip()
             if name:
@@ -248,7 +249,7 @@ async def apply_fast_plan(
 
         new_track_idx = starting_track_count + len(new_track_indices)
         try:
-            ableton.send_command("create_midi_track", {"index": -1, "name": track_name})
+            await ableton.send_command_async("create_midi_track", {"index": -1, "name": track_name})
         except Exception as exc:
             logger.warning("apply: create_midi_track(%s) failed: %s", track_name, exc)
             layer_results.append({
@@ -268,14 +269,14 @@ async def apply_fast_plan(
                 load_params: dict = {"track_index": new_track_idx, "uri": uri}
                 if simpler_role:
                     load_params["role"] = simpler_role
-                ableton.send_command("load_browser_item", load_params)
+                await ableton.send_command_async("load_browser_item", load_params)
                 loaded = True
             except Exception as exc:
                 logger.debug("apply: load_browser_item(%s, %s) failed: %s", new_track_idx, uri, exc)
 
             if loaded:
                 # v1.24 Phase 4 Task 18b: detect empty containers post-load
-                is_silent, silent_reason = _detect_silent_load(ableton, new_track_idx, device_index=0)
+                is_silent, silent_reason = await _detect_silent_load(ableton, new_track_idx, device_index=0)
                 if is_silent:
                     silent_load_warning = silent_reason
                     logger.warning(
@@ -287,7 +288,7 @@ async def apply_fast_plan(
                 # load_browser_item role='drum' silently skips Vol/Snap/root fixes
                 # when the track already has FX. Re-apply deterministically.
                 if _is_drum_role(role):
-                    role_repair = _apply_drum_role_repair(ableton, new_track_idx, device_index=0)
+                    role_repair = await _apply_drum_role_repair(ableton, new_track_idx, device_index=0)
                     if not role_repair.get("applied"):
                         logger.debug(
                             "apply: drum role repair failed for track %s: %s",
@@ -306,7 +307,7 @@ async def apply_fast_plan(
         clip_length_beats = max(bars * 4, int(max_end) + 1) if notes else bars * 4
 
         try:
-            ableton.send_command("create_clip", {
+            await ableton.send_command_async("create_clip", {
                 "track_index": new_track_idx,
                 "clip_index": target_scene,
                 "length": float(clip_length_beats),
@@ -322,7 +323,7 @@ async def apply_fast_plan(
         notes_added = 0
         if notes:
             try:
-                ableton.send_command("add_notes", {
+                await ableton.send_command_async("add_notes", {
                     "track_index": new_track_idx,
                     "clip_index": target_scene,
                     "notes": notes,
@@ -341,7 +342,7 @@ async def apply_fast_plan(
             if not device_name:
                 continue
             try:
-                ins_resp = ableton.send_command("insert_device", {
+                ins_resp = await ableton.send_command_async("insert_device", {
                     "track_index": new_track_idx,
                     "device_name": device_name,
                 }) or {}
@@ -351,7 +352,7 @@ async def apply_fast_plan(
                 if device_index is not None:
                     for pname, pvalue in (fx.get("params") or {}).items():
                         try:
-                            ableton.send_command("set_device_parameter", {
+                            await ableton.send_command_async("set_device_parameter", {
                                 "track_index": new_track_idx,
                                 "device_index": int(device_index),
                                 "parameter_name": str(pname),
@@ -401,7 +402,7 @@ async def apply_fast_plan(
                 })
                 continue
             try:
-                ableton.send_command("set_track_send", {
+                await ableton.send_command_async("set_track_send", {
                     "track_index": new_track_idx,
                     "send_index": int(send_index),
                     "value": value,
@@ -451,7 +452,7 @@ async def apply_fast_plan(
     # Fire the scene
     fired = False
     try:
-        ableton.send_command("fire_scene", {"scene_index": target_scene})
+        await ableton.send_command_async("fire_scene", {"scene_index": target_scene})
         fired = True
     except Exception as exc:
         logger.warning("apply: fire_scene(%s) failed: %s", target_scene, exc)
@@ -459,7 +460,7 @@ async def apply_fast_plan(
     # Final fresh-project cleanup: delete the leftover default track if
     # the brief left one in place to satisfy Ableton's "≥1 track" guard.
     final_cleanup_actions: list[str] = []
-    new_session = ableton.send_command("get_session_info", {})
+    new_session = await ableton.send_command_async("get_session_info", {})
     final_tracks = new_session.get("tracks", []) or []
     # If track 0 is still default-named and empty, AND we just added new
     # tracks, prune it now (we have ≥2 tracks total, safe to delete).
@@ -467,9 +468,9 @@ async def apply_fast_plan(
         first = final_tracks[0]
         if fast_compose.is_default_track_name(first.get("name", "")):
             try:
-                ti0 = ableton.send_command("get_track_info", {"track_index": 0})
+                ti0 = await ableton.send_command_async("get_track_info", {"track_index": 0})
                 if fast_compose.track_is_empty(ti0):
-                    ableton.send_command("delete_track", {"track_index": 0})
+                    await ableton.send_command_async("delete_track", {"track_index": 0})
                     final_cleanup_actions.append("deleted_leftover_default_track")
                     # All track indices shift down by 1
                     new_track_indices = [i - 1 for i in new_track_indices]

@@ -17,6 +17,7 @@ The engine itself is pure orchestration logic.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from typing import Optional
@@ -216,7 +217,7 @@ async def run_branch_async(
     branch.status = "running"
     branch.compiled_plan = compiled_plan
 
-    branch.before_snapshot = capture_fn()
+    branch.before_snapshot = await asyncio.to_thread(capture_fn)
 
     # Filter out read-only verification steps from the apply pass (canonical
     # list lives in execution_router.READ_ONLY_TOOLS).
@@ -252,13 +253,13 @@ async def run_branch_async(
         1 for r in exec_results if r.ok and r.backend == "remote_command"
     )
     branch.executed_at_ms = int(time.time() * 1000)
-    branch.after_snapshot = capture_fn()
+    branch.after_snapshot = await asyncio.to_thread(capture_fn)
 
     # Undo only the remote_command steps back to checkpoint. Undo is itself a
     # remote_command, routed through the normal ableton.send_command path.
     for _ in range(undo_count):
         try:
-            ableton.send_command("undo", {})
+            await ableton.send_command_async("undo", {})
         except Exception as exc:
             logger.debug("run_branch_async failed: %s", exc)
             break

@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import time
 from typing import Optional
 
@@ -351,7 +353,7 @@ async def run_experiment(
     if experiment.baseline_transport is None:
         from .baseline import capture_baseline
         try:
-            experiment.baseline_transport = capture_baseline(ableton)
+            experiment.baseline_transport = await asyncio.to_thread(capture_baseline, ableton)
         except Exception as exc:
             logger.debug("baseline capture failed: %s", exc)
             experiment.baseline_transport = None
@@ -365,7 +367,8 @@ async def run_experiment(
         # Between branches (not before the first), restore the baseline so
         # the next before_snapshot reads from the same reference state.
         if pending_seen > 0:
-            engine.prepare_for_next_branch(
+            await asyncio.to_thread(
+                engine.prepare_for_next_branch,
                 ableton, experiment.baseline_transport, stabilize_ms=300,
             )
         pending_seen += 1
@@ -414,7 +417,7 @@ async def run_experiment(
                 results.append(branch.to_dict())
                 continue
 
-            session_info = ableton.send_command("get_session_info")
+            session_info = await ableton.send_command_async("get_session_info")
             kernel = {"session_info": session_info, "mode": "explore"}
             plan = compiler.compile(move, kernel)
             compiled_dict = plan.to_dict()
@@ -422,12 +425,19 @@ async def run_experiment(
         # Pick the capture function — render-verify mode captures audio
         # and extracts a TimbralFingerprint, adding latency but giving
         # classify_branch_outcome real measurable evidence.
+        #
+        # NOTE: bound via functools.partial (not a lambda) so the blocking
+        # `_capture_snapshot*` call is never a "bare" call site in this
+        # function's body — it is only ever invoked downstream inside
+        # `engine.run_branch_async` via `await asyncio.to_thread(capture_fn)`,
+        # which is where the actual off-loop offload happens.
         if render_verify:
-            capture_fn = lambda: _capture_snapshot_with_render_verify(
+            capture_fn = functools.partial(
+                _capture_snapshot_with_render_verify,
                 ctx, duration_seconds=render_duration_seconds,
             )
         else:
-            capture_fn = lambda: _capture_snapshot(ctx)
+            capture_fn = functools.partial(_capture_snapshot, ctx)
 
         # Run the branch through the async router
         await engine.run_branch_async(

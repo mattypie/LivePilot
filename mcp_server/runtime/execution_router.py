@@ -22,6 +22,7 @@ Step-result binding:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -233,7 +234,17 @@ async def _execute_step_async(
                 error="Ableton connection unavailable",
             )
         try:
-            result = ableton.send_command(tool, params)
+            # Offload the blocking TCP round-trip to a worker thread so this
+            # shared executor never stalls the event loop (and therefore the
+            # concurrent UDP analyzer bridge) for the duration of the call.
+            # Prefer the real AbletonConnection's async wrapper when present;
+            # fall back to asyncio.to_thread directly for lightweight test
+            # doubles that only implement send_command.
+            send_command_async = getattr(ableton, "send_command_async", None)
+            if callable(send_command_async):
+                result = await send_command_async(tool, params)
+            else:
+                result = await asyncio.to_thread(ableton.send_command, tool, params)
             if isinstance(result, dict) and "error" in result:
                 return ExecutionResult(ok=False, backend=backend, tool=tool, error=result["error"])
             return ExecutionResult(ok=True, backend=backend, tool=tool, result=result)

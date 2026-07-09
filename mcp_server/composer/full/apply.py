@@ -329,7 +329,7 @@ async def apply_full_plan(
         )
 
     # ── Detect + clean default tracks ──────────────────────────────────
-    session = ableton.send_command("get_session_info", {})
+    session = await ableton.send_command_async("get_session_info", {})
     starting_track_count = int(session.get("track_count", 0))
 
     fresh_project = fast_compose.detect_fresh_project(session)
@@ -337,7 +337,7 @@ async def apply_full_plan(
         candidates: list[int] = []
         for i in range(starting_track_count):
             try:
-                ti = ableton.send_command("get_track_info", {"track_index": i})
+                ti = await ableton.send_command_async("get_track_info", {"track_index": i})
                 if fast_compose.track_is_empty(ti):
                     candidates.append(i)
             except Exception as exc:
@@ -350,7 +350,7 @@ async def apply_full_plan(
             deleted = 0
             for idx in deletable:
                 try:
-                    ableton.send_command("delete_track", {"track_index": idx})
+                    await ableton.send_command_async("delete_track", {"track_index": idx})
                     deleted += 1
                 except Exception as exc:
                     logger.debug("full apply: delete_track(%s) failed: %s", idx, exc)
@@ -414,18 +414,18 @@ async def apply_full_plan(
                 result = await _load_sample(ctx, **resolved_params)
             elif tool_name in ("create_midi_track", "create_audio_track"):
                 # Track the index so postflight can set monitoring on them
-                result = ableton.send_command(tool_name, resolved_params) or {}
+                result = await ableton.send_command_async(tool_name, resolved_params) or {}
                 if ok and isinstance(result, dict):
                     track_idx = result.get("track_index")
                     if track_idx is not None:
                         created_track_indices.append(int(track_idx))
             elif tool_name in _FULL_PLAN_TCP_TOOLS:
                 # Direct Remote-Script TCP command
-                result = ableton.send_command(tool_name, resolved_params) or {}
+                result = await ableton.send_command_async(tool_name, resolved_params) or {}
             else:
                 # Unknown tool — try generic TCP send (most LivePilot tools
                 # have a 1:1 Remote-Script handler with the same name).
-                result = ableton.send_command(tool_name, resolved_params) or {}
+                result = await ableton.send_command_async(tool_name, resolved_params) or {}
         except Exception as exc:
             ok = False
             err_msg = str(exc)
@@ -456,14 +456,14 @@ async def apply_full_plan(
     # invalidate the indices below.
     final_cleanup_actions: list[str] = []
     try:
-        post_session = ableton.send_command("get_session_info", {})
+        post_session = await ableton.send_command_async("get_session_info", {})
         tracks = post_session.get("tracks", []) or []
         if tracks and len(tracks) > 1:
             default_indices: list[int] = []
             for i, t in enumerate(tracks):
                 if fast_compose.is_default_track_name(t.get("name", "")):
                     try:
-                        ti = ableton.send_command("get_track_info", {"track_index": i})
+                        ti = await ableton.send_command_async("get_track_info", {"track_index": i})
                         if fast_compose.track_is_empty(ti):
                             default_indices.append(i)
                     except Exception as exc:
@@ -475,7 +475,7 @@ async def apply_full_plan(
                 if len(tracks) - len(final_cleanup_actions) <= 1:
                     break
                 try:
-                    ableton.send_command("delete_track", {"track_index": idx})
+                    await ableton.send_command_async("delete_track", {"track_index": idx})
                     final_cleanup_actions.append(f"deleted_leftover_default_track_at_{idx}")
                 except Exception as exc:
                     logger.debug("full apply: final cleanup delete_track(%s) failed: %s", idx, exc)
@@ -620,7 +620,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
         if ab is None:
             return {"ok": False}
         try:
-            return ab.send_command(
+            return await ab.send_command_async(
                 "set_track_input_monitoring",
                 {"track_index": track_index, "state": state},
             )
@@ -646,7 +646,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
     fresh_cleanup_actions: list[str] = []
     try:
         from ..fast.brief_builder import detect_fresh_project, is_default_track_name
-        session_preflight = ableton.send_command("get_session_info", {})
+        session_preflight = await ableton.send_command_async("get_session_info", {})
         if detect_fresh_project(session_preflight):
             # Delete default tracks in REVERSE order to keep indices stable.
             # Ableton requires at least 1 track — keep the lowest-indexed default.
@@ -662,7 +662,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
             if len(default_indices) > 1:
                 for idx in default_indices[:-1]:
                     try:
-                        ableton.send_command("delete_track", {"track_index": idx})
+                        await ableton.send_command_async("delete_track", {"track_index": idx})
                         fresh_cleanup_actions.append(f"deleted_default_track_{idx}")
                     except Exception as exc:
                         logger.debug("apply_full_v2: delete_track(%d) failed: %s", idx, exc)
@@ -674,15 +674,15 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
     plan_key = plan.get("key")
     if plan_tempo is not None:
         try:
-            session = ableton.send_command("get_session_info", {})
+            session = await ableton.send_command_async("get_session_info", {})
             current_tempo = float(session.get("tempo", 0.0))
             if abs(current_tempo - float(plan_tempo)) > 0.01:
-                ableton.send_command("set_tempo", {"tempo": float(plan_tempo)})
+                await ableton.send_command_async("set_tempo", {"tempo": float(plan_tempo)})
         except Exception as exc:
             logger.warning("apply_full_v2: tempo set failed: %s", exc)
     if plan_key:
         try:
-            ableton.send_command("set_song_scale", {"root_note": plan_key})
+            await ableton.send_command_async("set_song_scale", {"root_note": plan_key})
         except Exception as exc:
             logger.debug("apply_full_v2: set_song_scale skipped: %s", exc)
 
@@ -702,7 +702,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
         track_index = track_spec.get("track_index")
         if track_index is None:
             try:
-                result = ableton.send_command(
+                result = await ableton.send_command_async(
                     "create_midi_track",
                     {"index": -1, "name": track_spec.get("role", "")},
                 )
@@ -733,7 +733,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
         instrument = track_spec.get("instrument") or {}
         if instrument.get("uri"):
             try:
-                ableton.send_command(
+                await ableton.send_command_async(
                     "load_browser_item",
                     {"track_index": track_index, "uri": instrument["uri"]},
                 )
@@ -754,7 +754,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
         track_role = track_spec.get("role", "")
         if _is_drum_role(track_role):
             try:
-                _apply_drum_role_repair(ableton, track_index, device_index=0)
+                await _apply_drum_role_repair(ableton, track_index, device_index=0)
             except Exception as exc:
                 logger.debug(
                     "apply_full_v2: drum_role_repair failed for track %s: %s",
@@ -769,7 +769,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
             if not device_name:
                 continue
             try:
-                ins_resp = ableton.send_command("insert_device", {
+                ins_resp = await ableton.send_command_async("insert_device", {
                     "track_index": track_index,
                     "device_name": device_name,
                 }) or {}
@@ -778,7 +778,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                 if device_index is None:
                     # Fallback: query track and take the last device
                     try:
-                        track_info = ableton.send_command(
+                        track_info = await ableton.send_command_async(
                             "get_track_info", {"track_index": track_index}
                         )
                         device_index = len(track_info.get("devices", [])) - 1
@@ -786,7 +786,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                         pass
                 for param_name, param_value in (effect_spec.get("params") or {}).items():
                     try:
-                        ableton.send_command("set_device_parameter", {
+                        await ableton.send_command_async("set_device_parameter", {
                             "track_index": track_index,
                             "device_index": int(device_index),
                             "parameter_name": str(param_name),
@@ -819,7 +819,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                 continue
             if send_index is None and return_name:
                 try:
-                    session_info = ableton.send_command("get_session_info", {})
+                    session_info = await ableton.send_command_async("get_session_info", {})
                     return_tracks = session_info.get("return_tracks", []) or []
                     for i, rt in enumerate(return_tracks):
                         if (rt.get("name") or "").lower() == return_name.lower():
@@ -840,7 +840,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                 })
                 continue
             try:
-                ableton.send_command("set_track_send", {
+                await ableton.send_command_async("set_track_send", {
                     "track_index": track_index,
                     "send_index": int(send_index),
                     "value": value,
@@ -922,18 +922,18 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
             slot = vi
             variant_id_to_slot[variant["id"]] = slot
             try:
-                ableton.send_command("create_clip", {
+                await ableton.send_command_async("create_clip", {
                     "track_index": track_index,
                     "clip_index": slot,
                     "length": 4.0,
                 })
                 if variant.get("notes"):
-                    ableton.send_command("add_notes", {
+                    await ableton.send_command_async("add_notes", {
                         "track_index": track_index,
                         "clip_index": slot,
                         "notes": variant["notes"],
                     })
-                ableton.send_command("set_clip_name", {
+                await ableton.send_command_async("set_clip_name", {
                     "track_index": track_index,
                     "clip_index": slot,
                     "name": variant["id"],
@@ -996,7 +996,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
             # NEW FLOW: create ONE native arrangement clip spanning the full
             # section. Replaces create_arrangement_clip (session-clip duplication).
             try:
-                native_resp = ableton.send_command("create_native_arrangement_clip", {
+                native_resp = await ableton.send_command_async("create_native_arrangement_clip", {
                     "track_index": track_index,
                     "start_time": section_start_beats,
                     "length": section_length_beats,
@@ -1022,7 +1022,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                 # clip start — same coordinate space the agent used).
                 if variant_notes:
                     try:
-                        ableton.send_command("add_arrangement_notes", {
+                        await ableton.send_command_async("add_arrangement_notes", {
                             "track_index": track_index,
                             "clip_index": new_clip_index,
                             "notes": variant_notes,
@@ -1038,7 +1038,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
                 # full section length (e.g. a 4-beat kick loops 16× in a 64-beat
                 # verse section without requiring 64 beats of notes).
                 try:
-                    ableton.send_command("set_clip_loop", {
+                    await ableton.send_command_async("set_clip_loop", {
                         "track_index": track_index,
                         "clip_index": new_clip_index,
                         "enabled": True,
@@ -1101,7 +1101,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
     # would survive cleanup.
     try:
         from ..fast.brief_builder import is_default_track_name as _is_default_track_name
-        session_post = ableton.send_command("get_session_info", {})
+        session_post = await ableton.send_command_async("get_session_info", {})
         all_tracks = session_post.get("tracks", [])
         # Skip tracks we just created — only target leftover/zombie tracks
         compose_track_indices = set(applied_track_indices)
@@ -1120,7 +1120,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
             # Indicates a leftover from a previous compose run that the
             # default-name detector missed.
             try:
-                track_info = ableton.send_command("get_track_info", {"track_index": idx})
+                track_info = await ableton.send_command_async("get_track_info", {"track_index": idx})
                 devices = track_info.get("devices", []) or []
                 clip_slots = track_info.get("clip_slots", []) or []
                 has_instrument = any(
@@ -1140,7 +1140,7 @@ async def apply_full_plan_v2(ctx: Context, plan: dict) -> dict:
         # Delete in reverse-index order so indices stay stable
         for idx in sorted(candidate_indices, reverse=True):
             try:
-                ableton.send_command("delete_track", {"track_index": idx})
+                await ableton.send_command_async("delete_track", {"track_index": idx})
                 fresh_cleanup_actions.append(f"postflight_deleted_track_{idx}")
             except Exception as exc:
                 logger.debug("apply_full_v2: postflight delete_track(%s) failed: %s", idx, exc)

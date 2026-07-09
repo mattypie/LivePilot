@@ -9,6 +9,7 @@ These tools power the Agent OS cyclical loop:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -612,7 +613,9 @@ async def iterate_toward_goal(
                 if move is None:
                     branch.status = "failed"
                     continue
-                session_info = ableton.send_command("get_session_info")
+                session_info = await asyncio.to_thread(
+                    ableton.send_command, "get_session_info"
+                )
                 kernel = {"session_info": session_info, "mode": "explore"}
                 plan = compiler.compile(move, kernel)
                 branch.compiled_plan = plan.to_dict()

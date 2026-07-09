@@ -28,7 +28,11 @@ def _mock_ctx_with_recording():
             return {"tempo": args["tempo"]}
         return {"ok": True}
 
+    async def send_command_async(cmd, args=None):
+        return send_command(cmd, args)
+
     ableton.send_command = send_command
+    ableton.send_command_async = send_command_async
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
     return ctx
@@ -133,7 +137,10 @@ async def test_apply_sets_tempo_when_plan_specifies_different_tempo():
         if cmd == "get_session_info":
             return {"tempo": 122.0, "track_count": 5, "scene_count": 8}
         return {"ok": True}
+    async def send_command_async(cmd, args=None):
+        return send_command(cmd, args)
     ableton.send_command = send_command
+    ableton.send_command_async = send_command_async
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
 

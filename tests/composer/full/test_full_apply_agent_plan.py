@@ -63,6 +63,7 @@ def _mock_ctx_recording():
         return {"ok": True}
 
     ableton.send_command = send_command
+    ableton.send_command_async = AsyncMock(side_effect=send_command)
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
     return ctx
@@ -364,6 +365,7 @@ def _mock_ctx_recording_with_insert_device():
         return {"ok": True}
 
     ableton.send_command = send_command
+    ableton.send_command_async = AsyncMock(side_effect=send_command)
     ctx = MagicMock()
     ctx.lifespan_context = {"ableton": ableton}
     return ctx
@@ -546,6 +548,7 @@ async def test_full_apply_v2_analysis_failure_does_not_break_apply():
             raise RuntimeError("simulated analyzer failure")
         return {"ok": True}
     ableton.send_command = send_command
+    ableton.send_command_async = AsyncMock(side_effect=send_command)
     ctx = MagicMock()
     async def fail_analysis(_params, ctx=None):
         raise RuntimeError("simulated analyzer failure")

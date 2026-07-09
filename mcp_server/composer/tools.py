@@ -19,6 +19,7 @@ from .full.engine import ComposerEngine
 from . import fast as fast_compose
 from .fast.apply import apply_fast_plan
 from .full.apply import apply_full_plan
+import asyncio
 import logging
 import time
 
@@ -276,8 +277,8 @@ async def compose(
         return brief
 
     if mode == "fast":
-        brief = _build_fast_brief(
-            ctx, intent, bars=int(bars), reference=reference,
+        brief = await asyncio.to_thread(
+            _build_fast_brief, ctx, intent, bars=int(bars), reference=reference,
         )
         brief["prompt"] = prompt
         return brief
@@ -651,7 +652,7 @@ async def augment_with_samples(
     try:
         ableton = ctx.lifespan_context.get("ableton")
         if ableton:
-            info = ableton.send_command("get_session_info", {})
+            info = await ableton.send_command_async("get_session_info", {})
             session_context["tempo"] = info.get("tempo", 120)
             session_context["track_count"] = info.get("track_count", 0)
     except Exception as exc:

@@ -1581,6 +1581,9 @@ class _FakeAbleton:
             return {"clips": [], "devices": [{"name": "loaded"}]}
         return {}
 
+    async def send_command_async(self, name: str, params: dict) -> dict:
+        return self.send_command(name, params)
+
 
 class _FakeCtx:
     def __init__(self, ableton):

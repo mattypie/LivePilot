@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -303,6 +304,18 @@ class AbletonConnection:
 
         self._command_log.append(log_entry)
         return response.get("result", {})
+
+    async def send_command_async(self, command_type: str, params: Optional[dict] = None) -> dict:
+        """Async wrapper around :meth:`send_command`.
+
+        ``send_command`` performs a blocking TCP round-trip guarded by
+        ``self._lock``. Async MCP tools run on FastMCP's single event loop, so
+        calling ``send_command`` directly from one would freeze every other
+        concurrent coroutine (other tool calls, the UDP analyzer bridge, etc.)
+        for the duration of the round-trip. Offload it to a worker thread so
+        the loop stays free.
+        """
+        return await asyncio.to_thread(self.send_command, command_type, params)
 
     # ------------------------------------------------------------------
     # Command log
