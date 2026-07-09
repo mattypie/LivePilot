@@ -35,8 +35,16 @@ class AtlasManager:
         self._devices: List[Dict[str, Any]] = data.get("devices", [])
 
         # ── Build indexes ───────────────────────────────────────────
-        self._by_id: Dict[str, Dict[str, Any]] = {}
-        self._by_name: Dict[str, Dict[str, Any]] = {}  # lowercase key
+        # P2-12: _by_id / _by_name keep a LIST of every device sharing a
+        # key, in scan order, so colliding ids/names no longer shadow each
+        # other (last-wins). 719 ids + 702 names collide in the shipped
+        # atlas while URIs are 100% unique, so every device stays reachable
+        # via lookup_all() / atlas_device_info's surfaced URIs. lookup()
+        # still returns a single Dict (the first, deterministic match) to
+        # preserve its Optional[Dict] contract for compare()/browser.py/
+        # _research_engine.py.
+        self._by_id: Dict[str, List[Dict[str, Any]]] = {}
+        self._by_name: Dict[str, List[Dict[str, Any]]] = {}  # lowercase key
         self._by_uri: Dict[str, Dict[str, Any]] = {}
         self._by_category: Dict[str, List[Dict[str, Any]]] = {}
         self._by_tag: Dict[str, List[Dict[str, Any]]] = {}
@@ -50,20 +58,26 @@ class AtlasManager:
             dev_category = dev.get("category", "")
 
             if dev_id:
-                if dev_id in self._by_id and self._by_id[dev_id] is not dev:
+                bucket = self._by_id.setdefault(dev_id, [])
+                if bucket and dev not in bucket:
                     logger.warning(
-                        "atlas: duplicate device id %r shadows a prior entry "
-                        "(name=%r); last-wins", dev_id, dev_name,
+                        "atlas: duplicate device id %r (name=%r); both kept, "
+                        "lookup() returns the first — disambiguate by uri %r",
+                        dev_id, dev_name, dev_uri,
                     )
-                self._by_id[dev_id] = dev
+                if dev not in bucket:
+                    bucket.append(dev)
             if dev_name:
                 name_key = dev_name.lower()
-                if name_key in self._by_name and self._by_name[name_key] is not dev:
+                name_bucket = self._by_name.setdefault(name_key, [])
+                if name_bucket and dev not in name_bucket:
                     logger.warning(
-                        "atlas: duplicate device name %r shadows a prior entry "
-                        "(id=%r); last-wins", dev_name, dev_id,
+                        "atlas: duplicate device name %r (id=%r); both kept, "
+                        "lookup() returns the first — disambiguate by uri %r",
+                        dev_name, dev_id, dev_uri,
                     )
-                self._by_name[name_key] = dev
+                if dev not in name_bucket:
+                    name_bucket.append(dev)
             if dev_uri:
                 if dev_uri in self._by_uri and self._by_uri[dev_uri] is not dev:
                     logger.warning(
@@ -217,18 +231,51 @@ class AtlasManager:
     # ── Lookup ──────────────────────────────────────────────────────
 
     def lookup(self, name_or_id: str) -> Optional[Dict[str, Any]]:
-        """Exact match by ID, name (case-insensitive), or URI. Returns None on miss."""
+        """Exact match by ID, name (case-insensitive), or URI. Returns None on miss.
+
+        When an id/name collides across devices (719 ids / 702 names in the
+        shipped atlas), this returns the FIRST device in scan order
+        deterministically. Use lookup_all() to reach every colliding device,
+        or pass a unique URI (URIs never collide) to target a specific one.
+        """
         # Try ID first
-        if name_or_id in self._by_id:
-            return self._by_id[name_or_id]
+        bucket = self._by_id.get(name_or_id)
+        if bucket:
+            return bucket[0]
         # Try name (case-insensitive)
-        lower = name_or_id.lower()
-        if lower in self._by_name:
-            return self._by_name[lower]
-        # Try URI
+        name_bucket = self._by_name.get(name_or_id.lower())
+        if name_bucket:
+            return name_bucket[0]
+        # Try URI — the only key that is guaranteed unique
         if name_or_id in self._by_uri:
             return self._by_uri[name_or_id]
         return None
+
+    def lookup_all(self, name_or_id: str) -> List[Dict[str, Any]]:
+        """Return EVERY device matching an id, name, or URI — collision-aware.
+
+        P2-12: lookup() returns a single Dict (its contract), which shadows
+        the ~719 devices sharing a colliding id and ~702 sharing a name. This
+        companion returns all of them so id/name-keyed tools can disambiguate
+        (e.g. surface each candidate's unique URI). Matches are returned in
+        scan order with duplicates removed; an exact URI match alone returns
+        the single device for that URI.
+        """
+        out: List[Dict[str, Any]] = []
+        seen: set[int] = set()
+
+        def _extend(devs: List[Dict[str, Any]]) -> None:
+            for d in devs:
+                if id(d) not in seen:
+                    seen.add(id(d))
+                    out.append(d)
+
+        _extend(self._by_id.get(name_or_id, []))
+        _extend(self._by_name.get(name_or_id.lower(), []))
+        uri_hit = self._by_uri.get(name_or_id)
+        if uri_hit is not None:
+            _extend([uri_hit])
+        return out
 
     # ── Search ──────────────────────────────────────────────────────
 

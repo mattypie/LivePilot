@@ -43,6 +43,59 @@ def _get_atlas():
 # atlas_device_info.
 _ATLAS_SEARCH_DESCRIPTION_CHAR_CAP: int = 400
 
+# ── M4L pack-instrument URI guard (LIVE#3) ────────────────────────────────────
+# These instruments ship as Max for Live (.amxd) devices inside pack bundles
+# (Inspired by Nature, etc.).  The atlas erroneously stores them as
+# `query:Synths#<Name>` — the same scheme used for native Ableton instruments
+# (Operator, Wavetable, Collision, …).  That scheme only resolves in Live's
+# browser for *native* instruments; M4L pack instruments are NOT browsable under
+# "Synths".  Their presets (.adg racks) ARE browsable under "sounds", so agents
+# must fall back to search_browser(path="sounds", name_filter="<preset-name>").
+#
+# A device ID belongs here when ALL of the following hold:
+#   1. Its atlas URI is `query:Synths#<Name>`
+#   2. The device is an M4L / pack instrument (not a native Ableton synth engine)
+#   3. load_browser_item with the Synths# URI returns INVALID_PARAM in Live
+#
+# Do NOT add native instruments (Operator, Wavetable, Drift, Meld, Poli, etc.)
+# even if they were introduced in a later Live version — those resolve fine.
+# Add only IDs that have been *confirmed* broken in a live session.
+_M4L_PACK_SYNTH_IDS: frozenset[str] = frozenset({
+    "tree_tone",    # Inspired by Nature — M4L instrument, presets under sounds
+    "vector_fm",    # Inspired by Nature — M4L instrument, presets under sounds
+    "vector_grain", # Inspired by Nature — M4L instrument, presets under sounds
+    "emit",         # Inspired by Nature — M4L instrument, presets under sounds
+})
+
+
+def _patch_m4l_uri(entry_dict: dict, device: dict) -> dict:
+    """If this atlas entry is a known M4L pack instrument, clear the bogus
+    `query:Synths#` URI and surface a load hint instead.
+
+    Mutates *entry_dict* in-place and returns it for convenience.
+
+    Fields added / changed:
+      uri         → "" (cleared — the Synths# URI is NOT resolvable)
+      load_via    → "preset"
+      browse_hint → {"path": "sounds", "name_filter": "<device name>"}
+                    (tells the agent to call search_browser to resolve a real URI)
+    """
+    dev_id = device.get("id", "")
+    uri = entry_dict.get("uri", "")
+    if dev_id in _M4L_PACK_SYNTH_IDS and uri.startswith("query:Synths#"):
+        entry_dict["uri"] = ""
+        entry_dict["load_via"] = "preset"
+        entry_dict["browse_hint"] = {
+            "path": "sounds",
+            "name_filter": device.get("name", ""),
+            "note": (
+                "M4L pack instrument — not directly loadable via query:Synths#. "
+                "Call search_browser(path='sounds', name_filter='<preset name>') "
+                "to obtain a real URI, then load_browser_item with that URI."
+            ),
+        }
+    return entry_dict
+
 
 def _surface_enriched_fields(device: dict) -> dict:
     """Pull discoverability-critical fields from an enriched atlas entry.
@@ -155,6 +208,10 @@ def atlas_search(ctx: Context, query: str, category: str = "all", limit: int = 1
             # agent doesn't need a second atlas_device_info round-trip just
             # to find out e.g. that Granulator III isn't self-contained.
             entry_dict.update(_surface_enriched_fields(dev))
+        # LIVE#3: M4L pack instruments have a bogus query:Synths# URI in the
+        # atlas — clear it and surface a browse_hint so the caller doesn't get
+        # an INVALID_PARAM from load_browser_item.
+        _patch_m4l_uri(entry_dict, dev)
         results.append(entry_dict)
     for entry in overlay_results[:overlay_budget]:
         results.append({
@@ -195,8 +252,39 @@ def atlas_device_info(ctx: Context, device_id: str, verbose: bool = True) -> dic
     entry = atlas.lookup(device_id)
     if entry is None:
         return {"error": f"Device '{device_id}' not found in atlas", "suggestion": "Use atlas_search to find devices"}
+
+    # P2-12: an id/name can collide across multiple distinct devices (719
+    # ids / 702 names in the shipped atlas). lookup() deterministically
+    # returns the first; surface the others by their unique URI so the
+    # agent can re-query the exact variant it wants instead of getting one
+    # arbitrary match silently.
+    all_matches = atlas.lookup_all(device_id)
+    ambiguous_matches = None
+    if len(all_matches) > 1:
+        ambiguous_matches = [
+            {
+                "id": d.get("id", ""),
+                "name": d.get("name", ""),
+                "uri": d.get("uri", ""),
+                "category": d.get("category", ""),
+            }
+            for d in all_matches
+        ]
+
     if verbose:
-        return entry
+        # Patch a COPY — `entry` is the live in-memory atlas record; mutating it
+        # would corrupt the shared atlas. _patch_m4l_uri clears the bogus
+        # query:Synths# URI for M4L pack instruments (LIVE#3) so a direct
+        # atlas_device_info lookup doesn't hand the agent an unloadable URI.
+        if ambiguous_matches is not None:
+            result = _patch_m4l_uri(dict(entry), entry)
+            result["ambiguous_matches"] = ambiguous_matches
+            result["ambiguous_note"] = (
+                f"'{device_id}' matches {len(all_matches)} devices; showing the "
+                "first. Re-query by a unique uri to target a specific one."
+            )
+            return result
+        return _patch_m4l_uri(dict(entry), entry)
     # Compact mode: the common case doesn't need the full multi-KB record.
     # Truncate the longest free-text fields the way atlas_search already caps
     # sonic_description, and report counts for list-heavy fields so the caller
@@ -217,6 +305,14 @@ def atlas_device_info(ctx: Context, device_id: str, verbose: bool = True) -> dic
     }
     summary.update(_surface_enriched_fields(entry))
     summary["verbose_available"] = True
+    # LIVE#3: clear bogus query:Synths# URI for M4L pack instruments here too.
+    _patch_m4l_uri(summary, entry)
+    if ambiguous_matches is not None:
+        summary["ambiguous_matches"] = ambiguous_matches
+        summary["ambiguous_note"] = (
+            f"'{device_id}' matches {len(all_matches)} devices; showing the "
+            "first. Re-query by a unique uri to target a specific one."
+        )
     return summary
 
 
@@ -240,20 +336,24 @@ def atlas_suggest(
         return {"error": "Atlas not loaded. Run scan_full_library first."}
 
     results = atlas.suggest(intent, genre=genre, energy=energy)
+    suggestions = []
+    for r in results:
+        dev = r["device"]
+        suggestion: dict = {
+            "device_id": dev["id"],
+            "device_name": dev["name"],
+            "uri": dev.get("uri", ""),
+            "rationale": r["rationale"],
+            "recipe": r.get("recipe"),
+        }
+        # LIVE#3: patch out bogus query:Synths# URIs for M4L pack instruments
+        _patch_m4l_uri(suggestion, dev)
+        suggestions.append(suggestion)
     return {
         "intent": intent,
         "genre": genre,
         "energy": energy,
-        "suggestions": [
-            {
-                "device_id": r["device"]["id"],
-                "device_name": r["device"]["name"],
-                "uri": r["device"].get("uri", ""),
-                "rationale": r["rationale"],
-                "recipe": r.get("recipe"),
-            }
-            for r in results
-        ],
+        "suggestions": suggestions,
     }
 
 
@@ -461,17 +561,23 @@ def atlas_describe_chain(
             energy="medium",
             limit=int(limit_per_role),
         )
-        factory_suggestions = [
-            {
-                "device_id": r["device"].get("id", ""),
-                "device_name": r["device"].get("name", ""),
-                "uri": r["device"].get("uri", ""),
+        factory_suggestions = []
+        for r in results:
+            dev = r["device"]
+            entry = {
+                "device_id": dev.get("id", ""),
+                "device_name": dev.get("name", ""),
+                "uri": dev.get("uri", ""),
                 "rationale": r.get("rationale", ""),
                 "recipe": r.get("recipe"),
                 "source": "factory_atlas",
             }
-            for r in results
-        ]
+            # LIVE#3: clear the bogus query:Synths# URI for M4L pack instruments
+            # here too (same atlas.suggest backend atlas_suggest sanitizes). The
+            # chain_proposal block below reads top["uri"] from these entries, so
+            # patching here propagates automatically.
+            _patch_m4l_uri(entry, dev)
+            factory_suggestions.append(entry)
 
         # Query overlay namespaces for matching user-corpus devices
         overlay_hits = []

@@ -146,6 +146,100 @@ def test_lookup_miss_returns_none(atlas):
     assert atlas.lookup("ableton:FakeDevice") is None
 
 
+# ── Collision-aware lookup (P2-12) ──────────────────────────────────
+#
+# The shipped atlas has 719 ids and 702 names that collide across
+# devices with DISTINCT uris. Pre-fix, _by_id/_by_name were last-wins
+# dicts, so every colliding device except the last was unreachable via
+# id/name lookup. These tests pin that both colliding devices stay
+# reachable: lookup() returns the first deterministically and
+# lookup_all() / the unique uri reach the rest.
+
+COLLIDING_ATLAS = {
+    "meta": {"version": "2.0.0"},
+    "devices": [
+        {
+            "id": "color_limiter",
+            "name": "Color Limiter",
+            "uri": "query:AudioFx#Color%20Limiter",
+            "category": "audio_effects",
+            "description": "Native Color Limiter",
+            "tags": ["limiter"],
+        },
+        {
+            "id": "color_limiter",
+            "name": "Color Limiter",
+            "uri": "query:M4L#Max%20Audio%20Effect:FileId_97",
+            "category": "max_for_live",
+            "description": "M4L Color Limiter clone",
+            "tags": ["limiter", "m4l"],
+        },
+        {
+            "id": "unique_synth",
+            "name": "Unique Synth",
+            "uri": "ableton:UniqueSynth",
+            "category": "instruments",
+            "description": "A device with no colliding id or name",
+            "tags": ["synth"],
+        },
+    ],
+}
+
+
+@pytest.fixture
+def colliding_atlas(tmp_path):
+    path = tmp_path / "device_atlas.json"
+    path.write_text(json.dumps(COLLIDING_ATLAS))
+    return AtlasManager(str(path))
+
+
+def test_colliding_id_both_devices_reachable(colliding_atlas):
+    """Pre-fix the first color_limiter was shadowed (last-wins) and
+    unreachable by id. lookup_all must return BOTH."""
+    matches = colliding_atlas.lookup_all("color_limiter")
+    assert len(matches) == 2
+    uris = {d["uri"] for d in matches}
+    assert "query:AudioFx#Color%20Limiter" in uris
+    assert "query:M4L#Max%20Audio%20Effect:FileId_97" in uris
+
+
+def test_colliding_name_both_devices_reachable(colliding_atlas):
+    matches = colliding_atlas.lookup_all("color limiter")  # case-insensitive name
+    assert len(matches) == 2
+
+
+def test_lookup_returns_first_match_deterministically(colliding_atlas):
+    """lookup() keeps its Optional[Dict] contract: first in scan order,
+    not the arbitrary last-wins entry."""
+    dev = colliding_atlas.lookup("color_limiter")
+    assert dev is not None
+    assert dev["uri"] == "query:AudioFx#Color%20Limiter"
+
+
+def test_shadowed_device_reachable_by_unique_uri(colliding_atlas):
+    """The previously-shadowed M4L variant is reachable by its unique uri."""
+    dev = colliding_atlas.lookup("query:M4L#Max%20Audio%20Effect:FileId_97")
+    assert dev is not None
+    assert dev["category"] == "max_for_live"
+
+
+def test_lookup_all_non_colliding_returns_single(colliding_atlas):
+    matches = colliding_atlas.lookup_all("unique_synth")
+    assert len(matches) == 1
+    assert matches[0]["name"] == "Unique Synth"
+
+
+def test_lookup_all_miss_returns_empty(colliding_atlas):
+    assert colliding_atlas.lookup_all("nonexistent") == []
+
+
+def test_stats_index_size_counts_distinct_keys(colliding_atlas):
+    """by_id index size = distinct keys (2), not device count (3)."""
+    s = colliding_atlas.stats
+    assert s["index_sizes"]["by_id"] == 2
+    assert s["index_sizes"]["by_name"] == 2
+
+
 # ── Search ──────────────────────────────────────────────────────────
 
 
@@ -477,7 +571,12 @@ def test_duplicate_id_logs_collision_warning(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         mgr = AtlasManager(str(path))
 
-    assert mgr.lookup("dup")["name"] == "Second Device"
+    # P2-12: lookup() now returns the FIRST colliding device
+    # deterministically (was last-wins / "Second Device" pre-fix), and
+    # both devices stay reachable via lookup_all().
+    assert mgr.lookup("dup")["name"] == "First Device"
+    all_dup = mgr.lookup_all("dup")
+    assert [d["name"] for d in all_dup] == ["First Device", "Second Device"]
     collision_msgs = [
         r.getMessage() for r in caplog.records
         if r.levelno == logging.WARNING and "duplicate device id" in r.getMessage()

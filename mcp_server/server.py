@@ -10,6 +10,7 @@ from fastmcp import FastMCP, Context  # noqa: F401
 
 from .connection import AbletonConnection
 from .m4l_bridge import SpectralCache, SpectralReceiver, M4LBridge, MidiToolCache
+from .persistence.taste_store import PersistentTasteStore
 
 # Logger must be defined before any function uses it — several module-level
 # helpers below (e.g. _master_has_livepilot_analyzer) call logger.debug on
@@ -133,7 +134,9 @@ async def _warm_analyzer_bridge(
     timeout: float = 3.0,
 ) -> None:
     """Give the analyzer stream a short startup window before first use."""
-    if not _master_has_livepilot_analyzer(ableton):
+    # _master_has_livepilot_analyzer does a blocking TCP round-trip — run it
+    # off the event-loop thread so a slow Ableton can't stall startup.
+    if not await asyncio.to_thread(_master_has_livepilot_analyzer, ableton):
         return
 
     loop = asyncio.get_running_loop()
@@ -223,7 +226,7 @@ async def lifespan(server):
     try:
         # BUG-A1: detect stale Remote Script installs early so the user
         # sees a clear message instead of cryptic "Unknown command type" errors.
-        _check_remote_script_version(ableton)
+        await asyncio.to_thread(_check_remote_script_version, ableton)
         if bridge_state["transport"] is not None:
             await _warm_analyzer_bridge(ableton, spectral)
         # Bind per-project persistent store so creative threads and turn
@@ -231,7 +234,7 @@ async def lifespan(server):
         # through the tracker but never called — threads/turns were effectively
         # in-memory only. If Ableton isn't reachable yet, tools will lazy-bind
         # on first write via ensure_project_store_bound().
-        _bind_session_continuity(ableton)
+        await asyncio.to_thread(_bind_session_continuity, ableton)
         yield {
             "ableton": ableton,
             "spectral": spectral,
@@ -240,6 +243,12 @@ async def lifespan(server):
             "_bridge_state": bridge_state,
             "mcp_dispatch": mcp_dispatch,
             "splice_client": splice_client,
+            # Persistent taste backing so dimension weights / anti-preferences
+            # survive a server restart (P2-29). Keyed "persistent_taste" to match
+            # the existing wonder/runtime/preview_studio setdefault callers so all
+            # tools share ONE instance. Only present on the live server; tests
+            # construct their own context without it → session-only taste.
+            "persistent_taste": PersistentTasteStore(),
         }
     finally:
         if bridge_state["transport"]:
