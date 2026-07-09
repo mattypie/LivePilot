@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+Deep-review remediation campaign (2026-07-09, on top of the 2026-06-24 fix batch): event-loop
+blocking eliminated tree-wide, release-pipeline gates hardened, atlas scan truncation fixed,
+Splice connection health, state-layer race/replay guards, docs drift automation, and +262 tests
+(4326 → 4597 passing). No change to the tool surface (467 tools / 56 domains).
+
+### Fixed — event loop (systemic)
+- Every remaining blocking call in async tool paths offloaded (~80 sites across 13 files):
+  the composer fast/full/develop apply executors, the shared plan-step executor
+  (`execution_router._execute_step_async`), preview/experiment paths, analyzer helper call
+  sites, automation session-record, agent_os iteration, device-forge/file I/O, and lifespan
+  subprocess probes. New canonical wrapper `AbletonConnection.send_command_async()`.
+- The AST regression guard now scans ALL of `mcp_server/` (was analyzer.py-only) with
+  one-hop transitive detection and file-I/O/subprocess patterns (`scripts/scan_async_blocking.py`).
+
+### Fixed — correctness
+- `audit_layer` §5.1 timbre check was a silent double no-op (wrong call signature + uppercase
+  band table vs lowercase producers) — now plumbs cached analyzer spectrum and case-folds.
+- Atlas scans no longer truncate alphabetically at 1000 entries/category (drum kits previously
+  cut off before reaching most of the alphabet); scans record per-category counts + truncation
+  flags, and atlas searches warn when a truncated category is queried. Rescan required to
+  rebuild an existing user atlas (`scan_full_library(force=True)`).
+- Semantic mix/sound-design/transition/performance moves now nudge track volume RELATIVE to the
+  current level (bounded, direction-safe) instead of writing absolute constants; the Remote
+  Script now reports per-track volume in `get_session_info`.
+- Splice client marks itself degraded on RPC failure and self-heals with a one-shot reconnect —
+  a Splice desktop restart no longer yields silent fake "0 results" for the session; quota
+  check-and-record is atomic; HTTP retry no longer sleeps after the final attempt.
+- Preview/wonder cached plans carry a session fingerprint and refuse commit with STATE_ERROR
+  when the session changed shape; shared caches are lock-guarded; persisted taste/project
+  stores back up before any version-mismatch reset; `song_brain` ids are content-aware.
+- `get_emotional_arc` harmonic-instability term computed (was structurally zero);
+  flucoma probe no longer reports empty dirs as installed; composer engine renumbers layers
+  after unresolved-sample drops on the experiment-escalation path.
+
+### Changed — release gates & CI
+- New CI jobs: MCPB bundle build (asset previously shipped missing for 4 releases),
+  Python 3.11 compatibility for `remote_script/` (compileall + vermin), content-level
+  .amxd freeze check (full bridge command set, not just the version string).
+- `bin/livepilot.js` venv staleness keyed on a requirements.txt content hash (hardcoded import
+  list had drifted — upgrading users silently never installed the Splice gRPC dependencies).
+- `sync_metadata.py` validates JSON manifests version-field-by-field (caught a live
+  server.json split-version); docs Domain Map is now generated from the live registry;
+  banner assets and README What's New are drift-guarded.
+
+### Changed — performance & analysis quality
+- Server import ~2.0s → ~0.9s (lazy overlay index + libyaml CSafeLoader); atlas duplicate
+  warnings throttled; test suite wall-clock ~41s → ~32s.
+- Mix-critic confidence values are data-derived (sample size, measured-vs-heuristic basis,
+  margin) instead of hardcoded literals; `analyze_mix`/`get_mix_issues` accept
+  `target_style="loud_master"` to suppress the over-compressed flag for intentionally loud
+  masters; Wonder Mode ranking surfaces a `boldest_executable` slot alongside the safe pick.
+- Security hardening: corpus plugin-id path validation, loopback-only UDP analyzer ingestion,
+  competing-TCP-client identification in eviction errors.
+
 ### Changed — dependencies
 - **2026-06-25** — Raised the Python floor to 3.12: numpy>=2.5.0 and scipy>=1.18.0 declare `Requires-Python >=3.12`, so the prior 3.11 floor blocked both dependency bumps across the CI matrix. CI now tests only Python 3.12; the install-time Python-version diagnostic and manifest/docs floor references were updated to match. `remote_script/` stays 3.11-syntax-compatible for Ableton's embedded Python (Live 12.3) — the CI matrix change does not relax that constraint.
 
