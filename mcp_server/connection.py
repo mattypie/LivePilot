@@ -79,9 +79,20 @@ def _identify_other_tcp_client(host: str, port: int) -> str | None:
         out = subprocess.check_output(
             ["lsof", "-nP", f"-iTCP:{port}"],
             text=True,
-            timeout=3,
+            # Bounded tight: this runs inside the send lock on a socket
+            # timeout, so a slow lsof would extend the lock-hold (blocking
+            # every concurrent tool). TimeoutExpired is a SubprocessError —
+            # NOT a CalledProcessError — so it must be caught explicitly or
+            # it propagates out of the error-diagnostic path and crashes it.
+            timeout=1,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError, OSError):
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        ValueError,
+        OSError,
+    ):
         return None
 
     target = f"->{host}:{port}"
@@ -119,6 +130,10 @@ class AbletonConnection:
 
     def connect(self) -> None:
         """Open a TCP connection to the Remote Script."""
+        # Close any socket we still hold before opening a new one, otherwise the
+        # previous fd/socket leaks if connect() is called without a disconnect().
+        if self._socket is not None:
+            self.disconnect()
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(CONNECT_TIMEOUT)
@@ -340,7 +355,9 @@ class AbletonConnection:
                     err._send_completed = True
                     raise err
         except socket.timeout as exc:
-            self._recv_buf = buf
+            # Timeout is fatal to the connection: disconnect() below wipes
+            # _recv_buf to b"", so preserving the partial `buf` here would be
+            # dead, self-contradicting state. Drop it.
             self.disconnect()
             other_client = _identify_other_tcp_client(self.host, self.port)
             if other_client:
@@ -352,7 +369,7 @@ class AbletonConnection:
                 err._send_completed = True
                 raise err from exc
             err = AbletonConnectionError(
-                f"Timeout waiting for response from Ableton ({RECV_TIMEOUT}s)"
+                f"Timeout waiting for response from Ableton ({recv_timeout}s)"
             )
             err._send_completed = True
             raise err from exc
@@ -368,11 +385,27 @@ class AbletonConnection:
         line, remainder = buf.split(b"\n", 1)
         self._recv_buf = remainder
         try:
-            return json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise AbletonConnectionError(
-                f"Invalid JSON from Ableton: {line[:200]}"
-            ) from exc
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise AbletonConnectionError(
+                    f"Invalid JSON from Ableton: {line[:200]}"
+                ) from exc
+
+            # Correlate the response against the command we just sent. The
+            # Remote Script echoes our request id; a mismatch means we read an
+            # orphan / mis-paired frame and must not return it as this
+            # command's result.
+            resp_id = parsed.get("id") if isinstance(parsed, dict) else None
+            if resp_id is not None and resp_id != envelope["id"]:
+                self.disconnect()
+                err = AbletonConnectionError(
+                    f"Response id mismatch from Ableton "
+                    f"(expected {envelope['id']}, got {resp_id})"
+                )
+                err._send_completed = True
+                raise err
+            return parsed
         finally:
             if self._socket is not None:
                 try:

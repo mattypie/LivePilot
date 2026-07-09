@@ -246,6 +246,140 @@ def test_freeze_track_uses_extended_receive_timeout():
     assert conn._socket.timeouts == [40, 20]
 
 
+def test_connect_closes_previously_held_socket():
+    """P2-2: a second connect() without an intervening disconnect() must close
+    the previously held socket before overwriting self._socket, otherwise the
+    old fd/socket leaks."""
+
+    class _FakeSocket:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    conn = AbletonConnection(host="127.0.0.1", port=19999)
+    first = _FakeSocket()
+    conn._socket = first
+
+    # Real connect to a dead port will raise, but the leak-prevention close
+    # happens at the very top of connect() before any new socket is made.
+    with pytest.raises(AbletonConnectionError):
+        conn.connect()
+
+    assert first.closed is True, "connect() must close the previously held socket"
+
+
+def test_timeout_message_reports_actual_recv_timeout():
+    """P3-2: the timeout message must interpolate the real per-command
+    recv_timeout (e.g. 40s for freeze_track), not the module constant."""
+
+    class _TimeoutSocket:
+        def sendall(self, _payload):
+            return None
+
+        def recv(self, _size):
+            raise socket.timeout()
+
+        def close(self):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+    conn = AbletonConnection(host="127.0.0.1", port=19999)
+    conn._socket = _TimeoutSocket()
+
+    with pytest.raises(AbletonConnectionError, match=r"\(40s\)"):
+        conn._send_raw({"type": "freeze_track"}, recv_timeout=40)
+
+
+def test_timeout_does_not_preserve_partial_buffer():
+    """P3-3: on timeout the connection is torn down and _recv_buf is wiped;
+    the dead 'self._recv_buf = buf' assignment must not survive disconnect()."""
+
+    class _PartialThenTimeoutSocket:
+        def __init__(self):
+            self._sent_partial = False
+
+        def sendall(self, _payload):
+            return None
+
+        def recv(self, _size):
+            if not self._sent_partial:
+                self._sent_partial = True
+                return b'{"partial": tru'  # no newline -> loop continues
+            raise socket.timeout()
+
+        def close(self):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+    conn = AbletonConnection(host="127.0.0.1", port=19999)
+    conn._socket = _PartialThenTimeoutSocket()
+
+    with pytest.raises(AbletonConnectionError):
+        conn._send_raw({"type": "ping"})
+
+    assert conn._recv_buf == b"", "timeout must not leave partial bytes in _recv_buf"
+    assert conn._socket is None, "timeout must disconnect"
+
+
+def test_response_id_mismatch_is_rejected():
+    """P3-4: a response whose 'id' does not match the awaited envelope id is a
+    stale/orphan frame and must not be returned as this command's result."""
+
+    class _MismatchSocket:
+        def sendall(self, _payload):
+            return None
+
+        def recv(self, _size):
+            # Echo a foreign id rather than the one the client just stamped.
+            return b'{"id": "DEADBEEF", "ok": true, "result": {"pong": true}}\n'
+
+        def close(self):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+    conn = AbletonConnection(host="127.0.0.1", port=19999)
+    conn._socket = _MismatchSocket()
+
+    with pytest.raises(AbletonConnectionError, match="id mismatch"):
+        conn._send_raw({"type": "ping"})
+    assert conn._socket is None, "id mismatch must disconnect"
+
+
+def test_response_id_match_is_accepted():
+    """P3-4 guard must not false-positive: a correctly echoed id passes."""
+    captured = {}
+
+    class _EchoSocket:
+        def sendall(self, payload):
+            captured["id"] = json.loads(payload.decode("utf-8").strip())["id"]
+
+        def recv(self, _size):
+            body = json.dumps(
+                {"id": captured["id"], "ok": True, "result": {"pong": True}}
+            )
+            return (body + "\n").encode("utf-8")
+
+        def close(self):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+    conn = AbletonConnection(host="127.0.0.1", port=19999)
+    conn._socket = _EchoSocket()
+
+    result = conn._send_raw({"type": "ping"})
+    assert result["result"]["pong"] is True
+
+
 def test_fresh_connect_retries_single_client_guard(monkeypatch):
     conn = AbletonConnection(host="127.0.0.1", port=19999)
     attempts = {"count": 0}

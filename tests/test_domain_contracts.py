@@ -190,6 +190,47 @@ class TestAutomationContracts:
             clear_clip_automation(None, track_index=-100, clip_index=0)
 
 
+# ── Clip scale contracts ────────────────────────────────────────────
+
+class TestClipScaleContracts:
+    """Regression for P2-9: the per-clip scale tools must reject a
+    negative track/clip index the same way every sibling clip tool does.
+    A negative index would otherwise be forwarded to the Remote Script and
+    silently wrap to the LAST track (Python list indexing)."""
+
+    def test_get_clip_scale_rejects_negative_track(self):
+        from mcp_server.tools.clips import get_clip_scale
+        with pytest.raises(ValueError, match="track_index"):
+            get_clip_scale(None, track_index=-1, clip_index=0)
+
+    def test_get_clip_scale_rejects_negative_clip(self):
+        from mcp_server.tools.clips import get_clip_scale
+        with pytest.raises(ValueError, match="clip_index"):
+            get_clip_scale(None, track_index=0, clip_index=-1)
+
+    def test_set_clip_scale_rejects_negative_track(self):
+        from mcp_server.tools.clips import set_clip_scale
+        with pytest.raises(ValueError, match="track_index"):
+            set_clip_scale(None, track_index=-1, clip_index=0,
+                           root_note=0, scale_name="Major")
+
+    def test_set_clip_scale_rejects_negative_clip(self):
+        from mcp_server.tools.clips import set_clip_scale
+        with pytest.raises(ValueError, match="clip_index"):
+            set_clip_scale(None, track_index=0, clip_index=-1,
+                           root_note=0, scale_name="Major")
+
+    def test_set_clip_scale_mode_rejects_negative_track(self):
+        from mcp_server.tools.clips import set_clip_scale_mode
+        with pytest.raises(ValueError, match="track_index"):
+            set_clip_scale_mode(None, track_index=-1, clip_index=0, enabled=True)
+
+    def test_set_clip_scale_mode_rejects_negative_clip(self):
+        from mcp_server.tools.clips import set_clip_scale_mode
+        with pytest.raises(ValueError, match="clip_index"):
+            set_clip_scale_mode(None, track_index=0, clip_index=-1, enabled=True)
+
+
 # ── Tracks contracts ────────────────────────────────────────────────
 
 class TestTracksContracts:
