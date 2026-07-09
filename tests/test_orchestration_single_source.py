@@ -86,7 +86,12 @@ def test_wonder_variant_with_kernel_compiles_plan():
     assert "summary" in plan
     assert "risk_level" in plan
     assert isinstance(plan["steps"], list)
-    assert variant["analytical_only"] is False
+    # LIVE#9 invariant: analytical_only tracks EXECUTABILITY, not merely
+    # "a compiled plan exists". A compiled-but-non-executable plan (0 steps,
+    # e.g. this empty-tracks kernel) is analytical_only=True; an executable
+    # one is False. (Previously this asserted False unconditionally, which is
+    # the exact "claims executable but isn't" contradiction LIVE#9 fixed.)
+    assert variant["analytical_only"] == (not plan.get("executable", False))
 
 
 def test_wonder_variant_without_kernel_is_analytical():

@@ -203,3 +203,57 @@ async def test_empty_drum_sampler_detected_as_silent():
                      ("silent_load_warning" in layer)
 
     assert silent_warning, f"Expected silent_load_warning on empty DrumCell layer, got: {layer}"
+
+
+def test_drum_role_repair_surfaces_batch_partial_failure():
+    """C1 / P2-50: batch_set_parameters now returns a partial-success contract
+    ({"ok": False, "failed": M, ...}) instead of raising. _apply_drum_role_repair
+    must reflect that — NOT hardcode applied=True — so a failed param surfaces."""
+    from mcp_server.composer.fast.apply import _apply_drum_role_repair
+
+    class _FakeAbleton:
+        def send_command(self, cmd, args=None):
+            if cmd == "get_device_info":
+                return {"class_name": "OriginalSimpler"}
+            if cmd == "batch_set_parameters":
+                return {
+                    "ok": False,
+                    "applied": 2,
+                    "failed": 1,
+                    "parameters": [
+                        {"ok": True, "name_or_index": "Volume", "value": 0},
+                        {"ok": True, "name_or_index": "Snap", "value": 0},
+                        {"ok": False, "name_or_index": "Transpose",
+                         "error": "Parameter not found on this Live version"},
+                    ],
+                }
+            return {"ok": True}
+
+    result = _apply_drum_role_repair(_FakeAbleton(), track_index=0)
+    assert result["applied"] is False, "partial batch failure must surface as applied=False"
+    assert result["failed"] == 1
+
+
+def test_drum_role_repair_reports_success_on_clean_batch():
+    """Clean batch (ok=True) → applied=True; pre-P2-50 responses without 'ok'
+    default to applied=True for backward compatibility."""
+    from mcp_server.composer.fast.apply import _apply_drum_role_repair
+
+    class _FakeAbletonOK:
+        def send_command(self, cmd, args=None):
+            if cmd == "get_device_info":
+                return {"class_name": "OriginalSimpler"}
+            if cmd == "batch_set_parameters":
+                return {"ok": True, "applied": 3, "failed": 0, "parameters": []}
+            return {"ok": True}
+
+    class _FakeAbletonLegacy:  # pre-P2-50 shape, no "ok" key
+        def send_command(self, cmd, args=None):
+            if cmd == "get_device_info":
+                return {"class_name": "OriginalSimpler"}
+            if cmd == "batch_set_parameters":
+                return {"parameters": []}
+            return {"ok": True}
+
+    assert _apply_drum_role_repair(_FakeAbletonOK(), track_index=0)["applied"] is True
+    assert _apply_drum_role_repair(_FakeAbletonLegacy(), track_index=0)["applied"] is True

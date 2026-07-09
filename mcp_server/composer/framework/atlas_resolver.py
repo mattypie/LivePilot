@@ -541,8 +541,23 @@ class AtlasResolver:
     @staticmethod
     def _to_candidate(dev: dict, score: float, reasoning: str, *, source: str) -> AtlasCandidate:
         char_tags = list(dev.get("character_tags") or dev.get("tags") or [])
+        uri = dev.get("uri") or ""
+        # LIVE#3: M4L pack instruments carry a bogus `query:Synths#<Name>` atlas
+        # URI that load_browser_item can't resolve. Clear it for every resolver
+        # consumer (compose-full design / atlas_explore included) and note the
+        # preset fallback. Lazy import of the canonical ID set keeps a single
+        # source of truth without a module-load circular import.
+        try:
+            from mcp_server.atlas.tools import _M4L_PACK_SYNTH_IDS
+            if (dev.get("id") or "").lower() in _M4L_PACK_SYNTH_IDS and uri.startswith("query:Synths#"):
+                uri = ""
+                hint = ("M4L pack instrument — not directly loadable via "
+                        "query:Synths#; resolve via search_browser(path='sounds').")
+                reasoning = (reasoning + " | " + hint) if reasoning else hint
+        except Exception:
+            pass
         return AtlasCandidate(
-            uri=dev.get("uri") or "",
+            uri=uri,
             name=dev.get("name") or "",
             source=source,
             score=score,

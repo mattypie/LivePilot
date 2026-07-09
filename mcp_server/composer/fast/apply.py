@@ -104,9 +104,14 @@ def _apply_drum_role_repair(ableton, track_index: int, device_index: int = 0) ->
             "device_index": device_index,
             "parameters": params_to_set,
         })
+        # P2-50: batch_set_parameters no longer raises on a per-entry failure —
+        # it returns {"ok": bool, "failed": M, ...}. Reflect the actual outcome
+        # instead of hardcoding applied=True (default True keeps pre-P2-50
+        # Remote Scripts that omit "ok" working).
         return {
-            "applied": True,
+            "applied": bool(result.get("ok", True)),
             "device_class": class_name,
+            "failed": result.get("failed", 0),
             "params": result.get("parameters", []),
         }
     except Exception as exc:

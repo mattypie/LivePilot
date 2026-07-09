@@ -180,6 +180,29 @@ def test_is_warped_loop_matches_path_segment():
     assert _is_warped_loop("/x/pad_loops/clip.wav")
 
 
+def test_is_warped_loop_excludes_bare_number_drum_oneshots():
+    """A bare 2-3 digit number on a DRUM-material name (model number / index)
+    is a one-shot, NOT a warped loop. Misclassifying these skipped the
+    drum-root Transpose (-> sample plays 2 octaves down), force-looped, and
+    warped the one-shot — the recurring drum-Simpler bug. Genuine loops still
+    win via an explicit 'loop' token, 'Nbpm' literal, or a loops/ path."""
+    from mcp_server.tools._analyzer_engine.sample import _is_warped_loop
+
+    for p in [
+        "/x/Kick_808_deep.wav",   # 808 = drum-machine model, not a tempo
+        "/x/snare_05.wav",         # index
+        "/x/kick_36.wav",          # index
+        "/x/tom_120.wav",          # ambiguous number, but drum-named one-shot
+        "/x/clap_99.wav",
+    ]:
+        assert not _is_warped_loop(p), f"drum one-shot wrongly flagged as loop: {p}"
+
+    # Non-drum bare-BPM names and any explicit-signal loop still classify True.
+    assert _is_warped_loop("/x/pluck_124_Cmin.wav")          # melodic bare-BPM
+    assert _is_warped_loop("/x/SO_SD_90_drum_loop_slippy.wav")  # 'loop' token
+    assert _is_warped_loop("/x/drum_loops/lfh_drums_125_hubble_hatclp.wav")  # path
+
+
 # ── Item 1: compose_full_apply $from_step resolution ──────────────
 
 
