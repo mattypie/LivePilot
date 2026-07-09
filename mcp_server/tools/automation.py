@@ -110,11 +110,25 @@ def set_clip_automation(
             raise ValueError("device_index and parameter_index required for parameter_type='device'")
     if parameter_type == "send" and send_index is None:
         raise ValueError("send_index required for parameter_type='send'")
+    points_list = _ensure_list(points)
+    # Clamp values for fixed-range mixer envelopes so an out-of-range curve
+    # value (e.g. volume=1.5 from an inverted/scaled curve) can't reach the
+    # Remote Script. Mirrors set_track_volume/send (0.0-1.0) and
+    # set_track_pan (-1.0..1.0). Device params keep their native range — the
+    # caller is responsible for scaling those to the parameter's min/max.
+    if parameter_type in ("volume", "send"):
+        for pt in points_list:
+            if isinstance(pt, dict) and "value" in pt:
+                pt["value"] = max(0.0, min(1.0, pt["value"]))
+    elif parameter_type == "panning":
+        for pt in points_list:
+            if isinstance(pt, dict) and "value" in pt:
+                pt["value"] = max(-1.0, min(1.0, pt["value"]))
     params: dict = {
         "track_index": track_index,
         "clip_index": clip_index,
         "parameter_type": parameter_type,
-        "points": _ensure_list(points),
+        "points": points_list,
     }
     if device_index is not None:
         params["device_index"] = device_index
@@ -257,6 +271,8 @@ def apply_automation_shape(
             raise ValueError("device_index and parameter_index required for parameter_type='device'")
     if parameter_type == "send" and send_index is None:
         raise ValueError("send_index required for parameter_type='send'")
+    if curve_type == "euclidean" and steps < 1:
+        raise ValueError("euclidean 'steps' must be >= 1")
 
     # Generate the curve
     points = generate_curve(
@@ -465,6 +481,8 @@ def generate_automation_curve(
     Pass the returned points to set_clip_automation or
     set_arrangement_automation to write them.
     """
+    if curve_type == "euclidean" and steps < 1:
+        raise ValueError("euclidean 'steps' must be >= 1")
     points = generate_curve(
         curve_type=curve_type,
         duration=duration,

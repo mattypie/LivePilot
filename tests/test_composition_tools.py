@@ -147,3 +147,79 @@ class TestGetHarmonyFieldE3:
         assert chords != ["C chord"] * 4, (
             f"BUG-E3 regressed — chord progression still perc-driven: {chords!r}"
         )
+
+
+# ─── P2-44 — analyze_composition must gate get_notes on clip presence ──
+
+
+class TestAnalyzeCompositionGatesGetNotes:
+    """P2-44: analyze_composition issued O(tracks x scenes) blocking
+    get_notes round-trips, one per session slot, even for slots with no
+    clip. The clip_matrix from get_scene_matrix already says which slots
+    hold a clip; empty slots must be skipped so they don't each cost a
+    synchronous TCP call on Ableton's single-client main thread."""
+
+    def _fake_ableton(self, get_notes_calls):
+        from types import SimpleNamespace
+
+        # 3 tracks x 3 scenes = 9 slots, but only 2 slots hold a clip:
+        #   (scene 0, track 1) and (scene 2, track 2).
+        session_info = {
+            "tempo": 120,
+            "track_count": 3,
+            "tracks": [
+                {"index": 0, "name": "Kick"},
+                {"index": 1, "name": "Bass"},
+                {"index": 2, "name": "Pad"},
+            ],
+            "scenes": [
+                {"index": 0, "name": "Intro"},
+                {"index": 1, "name": "Verse"},
+                {"index": 2, "name": "Drop"},
+            ],
+        }
+        E = {"state": "empty"}
+        matrix = [
+            [E, {"state": "stopped", "has_clip": True, "name": "Bassline"}, E],
+            [E, E, E],
+            [E, E, {"state": "stopped", "has_clip": True, "name": "Pad Wash"}],
+        ]
+
+        def send_command(cmd, params=None):
+            params = params or {}
+            if cmd == "get_session_info":
+                return session_info
+            if cmd == "get_scene_matrix":
+                return {"matrix": matrix}
+            if cmd == "get_arrangement_clips":
+                return {"clips": []}
+            if cmd == "get_track_info":
+                idx = params.get("track_index")
+                return {"index": idx, "name": "", "devices": []}
+            if cmd == "get_notes":
+                get_notes_calls.append(
+                    (params.get("track_index"), params.get("clip_index"))
+                )
+                return {"notes": []}
+            return {}
+
+        return SimpleNamespace(
+            lifespan_context={"ableton": SimpleNamespace(send_command=send_command)}
+        )
+
+    def test_get_notes_only_called_for_slots_with_a_clip(self):
+        from mcp_server.tools.composition import analyze_composition
+
+        calls = []
+        ctx = self._fake_ableton(calls)
+        analyze_composition(ctx)
+
+        # Only the two clip-bearing slots may trigger a get_notes call.
+        # The other seven empty slots must be skipped — pre-fix this would
+        # have been all 9 (3 tracks x 3 scenes).
+        assert set(calls) == {(1, 0), (2, 2)}, (
+            f"get_notes must fire only for clip-bearing slots, got {calls!r}"
+        )
+        assert len(calls) == 2, (
+            f"expected exactly 2 get_notes calls, got {len(calls)}: {calls!r}"
+        )

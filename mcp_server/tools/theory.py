@@ -75,7 +75,7 @@ def analyze_harmony(
     """
     notes = _get_clip_notes(ctx, track_index, clip_index)
     if not notes:
-        return {"error": "No notes in clip", "suggestion": "Add notes first"}
+        return {"error": "No notes in clip", "code": "STATE_ERROR", "suggestion": "Add notes first"}
 
     key_info = _detect_or_parse_key(notes, key_hint=key)
     tonic = key_info["tonic"]
@@ -146,7 +146,7 @@ def suggest_next_chord(
     """
     notes = _get_clip_notes(ctx, track_index, clip_index)
     if not notes:
-        return {"error": "No notes in clip"}
+        return {"error": "No notes in clip", "code": "STATE_ERROR"}
 
     key_info = _detect_or_parse_key(notes, key_hint=key)
     tonic = key_info["tonic"]
@@ -154,7 +154,7 @@ def suggest_next_chord(
 
     chord_groups = engine.chordify(notes)
     if not chord_groups:
-        return {"error": "No chords detected in clip"}
+        return {"error": "No chords detected in clip", "code": "STATE_ERROR"}
 
     # Analyze last chord
     last_group = chord_groups[-1]
@@ -298,7 +298,7 @@ def detect_theory_issues(
     """
     notes = _get_clip_notes(ctx, track_index, clip_index)
     if not notes:
-        return {"error": "No notes in clip"}
+        return {"error": "No notes in clip", "code": "STATE_ERROR"}
 
     key_info = _detect_or_parse_key(notes, key_hint=key)
     tonic = key_info["tonic"]
@@ -406,7 +406,7 @@ def identify_scale(
     """
     notes = _get_clip_notes(ctx, track_index, clip_index)
     if not notes:
-        return {"error": "No notes in clip"}
+        return {"error": "No notes in clip", "code": "STATE_ERROR"}
 
     detected = engine.detect_key(notes, mode_detection=True)
 
@@ -481,7 +481,7 @@ def harmonize_melody(
     """
     notes = _get_clip_notes(ctx, track_index, clip_index)
     if not notes:
-        return {"error": "No notes in clip"}
+        return {"error": "No notes in clip", "code": "STATE_ERROR"}
 
     melody = sorted(
         [n for n in notes if not n.get("mute", False)],
@@ -655,7 +655,7 @@ def generate_countermelody(
 
     notes = _get_clip_notes(ctx, track_index, clip_index)
     if not notes:
-        return {"error": "No notes in clip"}
+        return {"error": "No notes in clip", "code": "STATE_ERROR"}
 
     melody = sorted(
         [n for n in notes if not n.get("mute", False)],
@@ -668,7 +668,7 @@ def generate_countermelody(
     # Build pool of scale pitches in range
     pool = [p for p in range(range_low, range_high + 1) if p % 12 in scale_pcs]
     if not pool:
-        return {"error": "No scale pitches in given range"}
+        return {"error": "No scale pitches in given range", "code": "STATE_ERROR"}
 
     # Consonant intervals (semitones mod 12): P1, m3, M3, P4, P5, m6, M6, P8
     consonant = {0, 3, 4, 5, 7, 8, 9}
@@ -790,14 +790,14 @@ def transpose_smart(
     """
     notes = _get_clip_notes(ctx, track_index, clip_index)
     if not notes:
-        return {"error": "No notes in clip"}
+        return {"error": "No notes in clip", "code": "STATE_ERROR"}
 
     source_key = engine.detect_key(notes)
 
     try:
         target = engine.parse_key(target_key)
     except ValueError:
-        return {"error": f"Invalid target key: {target_key}"}
+        return {"error": f"Invalid target key: {target_key}", "code": "INVALID_PARAM"}
 
     source_tonic = source_key["tonic"]
     target_tonic = target["tonic"]

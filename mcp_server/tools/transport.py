@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastmcp import Context
@@ -142,7 +143,9 @@ async def get_session_diagnostics(ctx: Context, check_clip_keys: bool = False) -
         the bridge once per audio clip and can add noticeable latency on
         large sessions.
     """
-    result = _get_ableton(ctx).send_command("get_session_diagnostics")
+    result = await asyncio.to_thread(
+        _get_ableton(ctx).send_command, "get_session_diagnostics"
+    )
 
     if not check_clip_keys:
         return result
@@ -155,7 +158,9 @@ async def get_session_diagnostics(ctx: Context, check_clip_keys: bool = False) -
     from .clips import check_clip_key_consistency  # local import to avoid cycles
 
     audio_mismatches: list[dict] = []
-    session_info = _get_ableton(ctx).send_command("get_session_info")
+    session_info = await asyncio.to_thread(
+        _get_ableton(ctx).send_command, "get_session_info"
+    )
     tracks = (session_info or {}).get("tracks", []) if isinstance(session_info, dict) else []
     for track in tracks:
         t_idx = track.get("index")

@@ -43,11 +43,11 @@ def navigate_tonnetz(
     Use depth 2-3 to see compound transforms (PL, PR, PRL, etc.).
     """
     if not 1 <= depth <= 3:
-        return {"error": "depth must be 1-3"}
+        return {"error": "depth must be 1-3", "code": "INVALID_PARAM"}
     try:
         root_pc, quality = harmony.parse_chord(chord)
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": str(e), "code": "INVALID_PARAM"}
 
     all_neighbors = harmony.get_neighbors(root_pc, quality, depth)
 
@@ -108,12 +108,12 @@ def find_voice_leading_path(
     hexatonic poles, and other cinematic chord moves.
     """
     if not 1 <= max_steps <= 6:
-        return {"error": "max_steps must be 1-6"}
+        return {"error": "max_steps must be 1-6", "code": "INVALID_PARAM"}
     try:
         from_parsed = harmony.parse_chord(from_chord)
         to_parsed = harmony.parse_chord(to_chord)
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": str(e), "code": "INVALID_PARAM"}
 
     result = harmony.find_shortest_path(from_parsed, to_parsed, max_steps)
 
@@ -221,7 +221,7 @@ def classify_progression(
     """
     chords = _ensure_list(chords)
     if len(chords) < 2:
-        return {"error": "Need at least 2 chords to classify"}
+        return {"error": "Need at least 2 chords to classify", "code": "INVALID_PARAM"}
 
     # Normalize dict inputs like {"root": "F#", "quality": "minor"} to strings
     normalized = []
@@ -236,7 +236,7 @@ def classify_progression(
     try:
         parsed = [harmony.parse_chord(c) for c in normalized]
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": str(e), "code": "INVALID_PARAM"}
 
     transforms = harmony.classify_transform_sequence(parsed)
     pattern = "".join(transforms)
@@ -336,7 +336,7 @@ def suggest_chromatic_mediants(
     try:
         root_pc, quality = harmony.parse_chord(chord)
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": str(e), "code": "INVALID_PARAM"}
 
     mediants = harmony.get_chromatic_mediants(root_pc, quality)
 

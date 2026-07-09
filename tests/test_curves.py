@@ -186,6 +186,93 @@ class TestStochasticCurve:
         late_spread = max(late) - min(late)
         assert late_spread < early_spread  # corridor narrows
 
+class TestEuclideanZeroSteps:
+    """P2-41: steps=0 must raise, not crash with ZeroDivisionError."""
+
+    def test_zero_steps_raises(self):
+        with pytest.raises(ValueError):
+            generate_curve("euclidean", hits=5, steps=0, duration=4.0)
+
+    def test_steps_one_is_allowed(self):
+        points = generate_curve("euclidean", hits=1, steps=1, duration=4.0)
+        assert len(points) == 1
+
+
+class TestPeriodicLoopSeam:
+    """P2-40: periodic curves use a half-open interval so the first and last
+    samples differ — no duplicated loop-seam point."""
+
+    def test_sine_first_last_differ(self):
+        points = generate_curve("sine", center=0.5, amplitude=0.5,
+                                frequency=1.0, duration=1.0, density=8)
+        assert points[0]["value"] != pytest.approx(points[-1]["value"], abs=1e-6)
+        # Last sample should be just before the seam, not at t == duration.
+        assert points[-1]["time"] < 1.0
+
+    def test_sawtooth_first_last_differ(self):
+        points = generate_curve("sawtooth", start=0.0, end=1.0,
+                                frequency=1.0, duration=1.0, density=8)
+        assert points[-1]["time"] < 1.0
+        assert points[0]["value"] != pytest.approx(points[-1]["value"], abs=1e-6)
+
+    def test_square_first_last_differ(self):
+        points = generate_curve("square", low=0.0, high=1.0,
+                                frequency=1.0, duration=1.0, density=8)
+        # freq=1, density=8: cycle_pos crosses 0.5 at i>=4, so first half high,
+        # second half low — the seam sample (t just before duration) is low.
+        assert points[0]["value"] != points[-1]["value"]
+
+    def test_ramp_curves_still_reach_end(self):
+        """Non-periodic ramps keep the closed interval (must hit the end)."""
+        lin = generate_curve("linear", start=0.0, end=1.0, duration=4.0, density=4)
+        assert lin[-1]["value"] == pytest.approx(1.0, abs=1e-6)
+
+
+class TestPointDurationSpacing:
+    """P2-39: auto point_duration matches the actual point spacing, so the
+    final step does not overshoot the clip end."""
+
+    def test_density_curve_duration_matches_spacing(self):
+        duration = 4.0
+        density = 8
+        points = generate_curve("linear", start=0.0, end=1.0,
+                                duration=duration, density=density)
+        # Closed-interval spacing is duration/(density-1); the old code used
+        # duration/density (= duration/len(points)), under-shooting the gap.
+        expected_spacing = duration / (density - 1)
+        assert points[0]["duration"] == pytest.approx(expected_spacing, abs=1e-9)
+        # The step width must equal the real gap between consecutive points,
+        # so each step lands exactly on the next breakpoint (no drift).
+        gap = points[1]["time"] - points[0]["time"]
+        assert points[0]["duration"] == pytest.approx(gap, abs=1e-9)
+        # Regression guard: it must NOT be the buggy duration/len value.
+        assert points[0]["duration"] != pytest.approx(duration / density, abs=1e-9)
+
+    def test_periodic_curve_duration_matches_spacing(self):
+        duration = 4.0
+        density = 8
+        points = generate_curve("sine", center=0.5, amplitude=0.5,
+                                frequency=1.0, duration=duration, density=density)
+        # Half-open spacing is duration/density.
+        assert points[0]["duration"] == pytest.approx(duration / density, abs=1e-9)
+
+
+class TestElasticRings:
+    """P2-42: elastic easing must oscillate across the span instead of
+    collapsing to a near-step after the [0,1] clamp."""
+
+    def test_elastic_oscillates(self):
+        points = generate_curve("easing", start=0.0, end=1.0,
+                                easing_type="elastic", duration=4.0, density=32)
+        values = [round(p["value"], 3) for p in points]
+        # A near-step function would have ~2 distinct clamped values. The
+        # ringing easeOutElastic produces many distinct levels.
+        assert len(set(values)) >= 6
+        # Endpoints anchored.
+        assert points[0]["value"] == pytest.approx(0.0, abs=1e-6)
+        assert points[-1]["value"] == pytest.approx(1.0, abs=1e-6)
+
+
 class TestCurveTransforms:
     def test_invert(self):
         points = generate_curve("linear", start=0.0, end=1.0, duration=4.0,

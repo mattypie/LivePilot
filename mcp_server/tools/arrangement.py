@@ -107,10 +107,13 @@ def create_arrangement_clip(
                      8-beat pattern inside a 128-beat section). Defaults to
                      the source clip's length. Must be > 0.
 
-    When loop_length < source clip length, overlapping copies are placed
-    every loop_length beats. Ableton's "later clip takes priority" rule
-    ensures correct playback. Each copy's internal loop region is set to
-    loop_length beats. For best results, use loop_length >= source length.
+    Copies are tiled every min(loop_length, source length) beats so the
+    region is always filled seamlessly — a loop_length larger than the
+    source no longer leaves a silent gap between copies. When
+    loop_length < source length, overlapping copies are placed every
+    loop_length beats and each copy's internal loop region is set to
+    loop_length beats (Ableton's "later clip takes priority" rule ensures
+    correct playback).
 
     name:            optional clip display name
     color_index:     optional 0-69 Ableton color

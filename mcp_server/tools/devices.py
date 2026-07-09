@@ -303,7 +303,20 @@ def set_device_parameter(
     if parameter_index is not None:
         params["parameter_index"] = parameter_index
     try:
-        return _get_ableton(ctx).send_command("set_device_parameter", params)
+        response = _get_ableton(ctx).send_command("set_device_parameter", params)
+        # P2-51: apply the same silent-snap detection as batch_set_parameters so
+        # both sibling tools give a machine-readable ``snapped`` signal.
+        if isinstance(response, dict):
+            actual_val = response.get("value")
+            if actual_val is not None:
+                try:
+                    req_f = float(value)
+                    act_f = float(actual_val)
+                    did_snap = abs(req_f - act_f) > _SNAP_EPSILON
+                except (TypeError, ValueError):
+                    did_snap = value != actual_val
+                response["snapped"] = did_snap
+        return response
     except Exception as exc:
         # BUG-2026-04-26#2: enrich out-of-range errors with the actual
         # min/max/value_string from get_device_parameters so the caller

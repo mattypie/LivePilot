@@ -516,6 +516,8 @@ def get_clip_scale(ctx: Context, track_index: int, clip_index: int) -> dict:
     Returns {root_note (0-11), scale_mode (bool), scale_name (str)}.
     Raises if the clip slot is empty.
     """
+    _validate_track_index(track_index)
+    _validate_clip_index(clip_index)
     return _get_ableton(ctx).send_command("get_clip_scale", {
         "track_index": track_index,
         "clip_index": clip_index,
@@ -540,6 +542,8 @@ def set_clip_scale(
     scale_name:  must match one of Live's built-in scales
                  (call list_available_scales() if unsure)
     """
+    _validate_track_index(track_index)
+    _validate_clip_index(clip_index)
     if not 0 <= root_note <= 11:
         raise ValueError("root_note must be 0-11")
     if not scale_name.strip():
@@ -564,6 +568,8 @@ def set_clip_scale_mode(
     When enabled on a clip, its notes are constrained/highlighted
     by the clip's own root_note + scale_name (set via set_clip_scale).
     """
+    _validate_track_index(track_index)
+    _validate_clip_index(clip_index)
     return _get_ableton(ctx).send_command("set_clip_scale_mode", {
         "track_index": track_index,
         "clip_index": clip_index,

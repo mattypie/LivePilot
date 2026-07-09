@@ -151,9 +151,15 @@ def generate_curve(
 
     points = gen(**kwargs)
 
-    # Auto-calculate point duration if not specified
+    # Auto-calculate point duration if not specified. Use the actual spacing
+    # between consecutive points rather than duration/len(points): density
+    # generators that span the closed interval [0, duration] space points at
+    # duration/(density-1), so duration/len would under-shoot and the final
+    # step would overshoot the clip end. Reading the real gap keeps the step
+    # width consistent with however the generator placed its points.
     if point_duration <= 0 and len(points) > 1:
-        point_duration = duration / len(points)
+        spacing = points[1]["time"] - points[0]["time"]
+        point_duration = spacing if spacing > 0 else duration / len(points)
 
     # Apply transforms
     for p in points:
@@ -227,7 +233,9 @@ def _sine(duration: float, density: int, center: float, amplitude: float,
     """Periodic oscillation. frequency = cycles per duration."""
     points = []
     for i in range(density):
-        t = (i / max(density - 1, 1)) if density > 1 else 0.0
+        # Half-open interval [0, duration): never emit t == duration, which
+        # for a periodic curve duplicates the t == 0 sample at the loop seam.
+        t = i / density if density > 0 else 0.0
         angle = 2 * math.pi * frequency * t + phase * 2 * math.pi
         points.append({
             "time": t * duration,
@@ -241,7 +249,9 @@ def _sawtooth(duration: float, density: int, start: float, end: float,
     """Ramp up then reset. frequency = resets per duration."""
     points = []
     for i in range(density):
-        t = (i / max(density - 1, 1)) if density > 1 else 0.0
+        # Half-open interval [0, duration): a periodic sawtooth that emits
+        # t == duration duplicates the t == 0 sample at the loop seam.
+        t = i / density if density > 0 else 0.0
         # Position within current cycle (0.0 to 1.0)
         cycle_pos = (t * frequency) % 1.0
         points.append({
@@ -268,7 +278,9 @@ def _square(duration: float, density: int, low: float, high: float,
     """Binary on/off toggle."""
     points = []
     for i in range(density):
-        t = (i / max(density - 1, 1)) if density > 1 else 0.0
+        # Half-open interval [0, duration): a periodic gate that emits
+        # t == duration duplicates the t == 0 sample at the loop seam.
+        t = i / density if density > 0 else 0.0
         cycle_pos = (t * frequency) % 1.0
         points.append({
             "time": t * duration,
@@ -483,10 +495,16 @@ def _easing(duration: float, density: int, start: float = 0.0,
             return 7.5625 * t * t + 0.984375
 
     def _elastic(t: float) -> float:
+        # easeOutElastic: spring-like overshoot that RINGS DOWN and settles
+        # at 1.0. The old easeInElastic form held near 0 for almost the whole
+        # span then snapped to 1 at t==1 — after the [0,1] clamp in
+        # generate_curve that collapsed to a near-step function (P2-42).
+        # easeOutElastic oscillates with decaying amplitude across the span,
+        # so the characteristic ring survives the clamp.
         if t == 0 or t == 1:
             return t
-        p = 0.3
-        return -(2 ** (10 * (t - 1))) * math.sin((t - 1 - p/4) * 2 * math.pi / p)
+        c4 = (2 * math.pi) / 3
+        return 2 ** (-10 * t) * math.sin((t * 10 - 0.75) * c4) + 1.0
 
     def _back(t: float) -> float:
         s = 1.70158  # overshoot amount
@@ -539,6 +557,11 @@ def _euclidean(duration: float, density: int, start: float = 0.0,
     5 filter opens across 8 beats. 3 reverb throws across 16 steps.
     Produces non-obvious but musically satisfying rhythmic modulation.
     """
+    # Guard: steps must be >= 1 — Bjorklund on 0 slots yields an empty
+    # pattern, and dividing duration by len([]) raises ZeroDivisionError.
+    if steps < 1:
+        raise ValueError("euclidean 'steps' must be >= 1")
+
     # Bjorklund algorithm
     def _bjorklund(hits_n: int, steps_n: int) -> list:
         if hits_n >= steps_n:

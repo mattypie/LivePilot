@@ -130,13 +130,13 @@ async def get_track_meters(
         interval = max(0, sample_interval_ms) / 1000.0
         snapshots: list[dict] = []
         for i in range(samples):
-            snap = ableton.send_command("get_track_meters", params)
+            snap = await asyncio.to_thread(ableton.send_command, "get_track_meters", params)
             if isinstance(snap, dict):
                 snapshots.append(snap)
             if i < samples - 1 and interval > 0:
                 await asyncio.sleep(interval)
         if not snapshots:
-            return {"error": "No meter snapshots collected"}
+            return {"error": "No meter snapshots collected", "code": "STATE_ERROR"}
         # Take the first snapshot's structure and peak-combine across all.
         result = dict(snapshots[0])
         # Merge tracks field with peak-maxing
@@ -165,13 +165,13 @@ async def get_track_meters(
         result["samples_collected"] = len(snapshots)
         result["sample_interval_ms"] = sample_interval_ms
     else:
-        result = ableton.send_command("get_track_meters", params)
+        result = await asyncio.to_thread(ableton.send_command, "get_track_meters", params)
         if not isinstance(result, dict):
             return result
 
     # Probe playback state once so we can annotate the response
     try:
-        session = ableton.send_command("get_session_info", {})
+        session = await asyncio.to_thread(ableton.send_command, "get_session_info", {})
         is_playing = bool(session.get("is_playing", False))
     except Exception:
         is_playing = None  # unknown — leave left/right as reported

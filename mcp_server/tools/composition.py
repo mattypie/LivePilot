@@ -57,6 +57,27 @@ def _build_clip_matrix(ableton, scene_count: int, track_count: int) -> list[list
         return [[] for _ in range(scene_count)]
 
 
+def _slot_has_clip(clip_matrix: list[list], scene_idx: int, track_idx: int) -> bool:
+    """Whether the (scene, track) session slot actually holds a clip.
+
+    Reads the clip_matrix produced by get_scene_matrix
+    (matrix[scene_index][track_index] = {"state": ...}). A slot holds a
+    clip when its state is anything other than "empty"/"missing". Used to
+    gate per-slot get_notes round-trips so empty slots — the bulk of a
+    sparse session grid — don't each cost a blocking TCP call on
+    Ableton's main thread.
+    """
+    if scene_idx >= len(clip_matrix):
+        return False
+    row = clip_matrix[scene_idx]
+    if track_idx >= len(row):
+        return False
+    cell = row[track_idx]
+    if not cell:
+        return False
+    return cell.get("state") not in ("empty", "missing")
+
+
 # ── analyze_composition ───────────────────────────────────────────────
 
 
@@ -126,9 +147,15 @@ def analyze_composition(ctx: Context) -> dict:
 
     for track in tracks:
         t_idx = track["index"]
-        # Collect notes from all clips
+        # Collect notes only from slots that actually hold a clip. Empty
+        # slots are skipped — the clip_matrix already tells us they have no
+        # notes, so issuing a blocking get_notes round-trip per empty slot
+        # would burn O(tracks x scenes) synchronous TCP calls on Ableton's
+        # main thread for no data.
         track_notes = []
         for s_idx in range(len(scenes)):
+            if not _slot_has_clip(clip_matrix, s_idx, t_idx):
+                continue
             try:
                 result = ableton.send_command("get_notes", {
                     "track_index": t_idx, "clip_index": s_idx
@@ -241,7 +268,11 @@ def get_phrase_grid(
     # (which maps to the actual clip slot), not the section_index
     # (which is a position in the section graph)
     notes_by_track: dict[int, list] = {}
-    scene_idx = section.scene_index if hasattr(section, "scene_index") else section_index
+    # scene_index now ALWAYS exists (dataclass default -1), so a hasattr() guard
+    # is always True and would forward -1 for arrangement-backed sections — and
+    # clip_index=-1 silently wraps to the LAST clip slot. Guard on the value
+    # being a real slot (>= 0), matching get_harmony_field's guard.
+    scene_idx = section.scene_index if getattr(section, "scene_index", -1) >= 0 else section_index
     for t_idx in section.tracks_active:
         try:
             result = ableton.send_command("get_notes", {

@@ -43,11 +43,11 @@ def generate_euclidean_rhythm(
     Returns note array — use add_notes to place in a clip.
     """
     if not 0 <= pulses <= 64:
-        return {"error": "pulses must be 0-64"}
+        return {"error": "pulses must be 0-64", "code": "INVALID_PARAM"}
     if not 1 <= steps <= 64:
-        return {"error": "steps must be 1-64"}
+        return {"error": "steps must be 1-64", "code": "INVALID_PARAM"}
     if pulses > steps:
-        return {"error": "pulses must be <= steps"}
+        return {"error": "pulses must be <= steps", "code": "INVALID_PARAM"}
 
     pattern = gen.bjorklund(pulses, steps)
     if rotation:
@@ -85,7 +85,7 @@ def layer_euclidean_rhythms(
     """
     layers = _ensure_list(layers)
     if not layers:
-        return {"error": "At least one layer required"}
+        return {"error": "At least one layer required", "code": "INVALID_PARAM"}
 
     all_notes: list[dict] = []
     layer_info: list[dict] = []
@@ -152,16 +152,16 @@ def generate_tintinnabuli(
     """
     melody_notes = _ensure_list(melody_notes)
     if not melody_notes:
-        return {"error": "melody_notes cannot be empty"}
+        return {"error": "melody_notes cannot be empty", "code": "INVALID_PARAM"}
     if position not in ("above", "below", "nearest"):
-        return {"error": "position must be 'above', 'below', or 'nearest'"}
+        return {"error": "position must be 'above', 'below', or 'nearest'", "code": "INVALID_PARAM"}
 
     try:
         parsed = theory.parse_key(triad)
     except ValueError:
-        return {"error": f"Cannot parse triad: {triad}"}
+        return {"error": f"Cannot parse triad: {triad}", "code": "INVALID_PARAM"}
     if parsed["mode"] not in ("major", "minor"):
-        return {"error": "Only major and minor triads are supported"}
+        return {"error": "Only major and minor triads are supported", "code": "INVALID_PARAM"}
 
     root = parsed["tonic"]
     if parsed["mode"] == "major":
@@ -208,11 +208,11 @@ def generate_phase_shift(
     """
     pattern_notes = _ensure_list(pattern_notes)
     if not pattern_notes:
-        return {"error": "pattern_notes cannot be empty"}
+        return {"error": "pattern_notes cannot be empty", "code": "INVALID_PARAM"}
     if not 1 <= voices <= 8:
-        return {"error": "voices must be 1-8"}
+        return {"error": "voices must be 1-8", "code": "INVALID_PARAM"}
     if shift_amount <= 0:
-        return {"error": "shift_amount must be > 0"}
+        return {"error": "shift_amount must be > 0", "code": "INVALID_PARAM"}
 
     result_notes = gen.phase_shift(pattern_notes, voices, shift_amount, total_length)
 
@@ -251,11 +251,11 @@ def generate_additive_process(
     """
     melody_notes = _ensure_list(melody_notes)
     if not melody_notes:
-        return {"error": "melody_notes cannot be empty"}
+        return {"error": "melody_notes cannot be empty", "code": "INVALID_PARAM"}
     if direction not in ("forward", "backward", "both"):
-        return {"error": "direction must be 'forward', 'backward', or 'both'"}
+        return {"error": "direction must be 'forward', 'backward', or 'both'", "code": "INVALID_PARAM"}
     if repetitions_per_stage < 1:
-        return {"error": "repetitions_per_stage must be >= 1"}
+        return {"error": "repetitions_per_stage must be >= 1", "code": "INVALID_PARAM"}
 
     result_notes = gen.additive_process(melody_notes, direction,
                                          repetitions_per_stage)

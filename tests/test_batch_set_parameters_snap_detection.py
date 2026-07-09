@@ -154,3 +154,70 @@ class TestBatchSetParametersSnapDetection:
         )
         assert "parameters" in result
         assert result["parameters"] == response_params
+
+
+# ── P2-51: single set_device_parameter must also surface snap ────────────
+
+
+def _make_single_ctx(response_dict):
+    """Minimal ctx returning a flat dict from set_device_parameter."""
+
+    class _Ableton:
+        def send_command(self, cmd, params=None):
+            return response_dict
+
+    return SimpleNamespace(lifespan_context={"ableton": _Ableton()})
+
+
+class TestSetDeviceParameterSnapDetection:
+    """Regression guard for P2-51: single set_device_parameter lacked the
+    silent-snap detection present on batch_set_parameters.  Both siblings
+    must now return a machine-readable ``snapped`` bool so callers don't
+    have to compare value_string manually.
+    """
+
+    def test_no_snap_returns_snapped_false(self):
+        """When the requested value round-trips exactly, snapped must be False."""
+        from mcp_server.tools.devices import set_device_parameter
+
+        ctx = _make_single_ctx({"name": "Dry/Wet", "value": 0.5,
+                                 "value_string": "50 %", "min": 0.0, "max": 1.0,
+                                 "display_value": 50})
+        result = set_device_parameter(ctx, track_index=0, device_index=0,
+                                      value=0.5, parameter_name="Dry/Wet")
+        assert result.get("snapped") is False
+
+    def test_quantized_snap_returns_snapped_true(self):
+        """When Ableton snaps 0.3 → 0 on a quantized param, snapped must be True."""
+        from mcp_server.tools.devices import set_device_parameter
+
+        ctx = _make_single_ctx({"name": "Gate", "value": 0,
+                                 "value_string": "1/16", "min": 0, "max": 11,
+                                 "display_value": "1/16"})
+        result = set_device_parameter(ctx, track_index=0, device_index=0,
+                                      value=0.3, parameter_name="Gate")
+        assert result.get("snapped") is True
+
+    def test_float_epsilon_drift_not_flagged_as_snap(self):
+        """Tiny float precision drift (<1e-5) must not be reported as a snap."""
+        from mcp_server.tools.devices import set_device_parameter
+
+        ctx = _make_single_ctx({"name": "Dry/Wet", "value": 0.4000000059604645,
+                                 "value_string": "40 %", "min": 0.0, "max": 1.0,
+                                 "display_value": 40})
+        result = set_device_parameter(ctx, track_index=0, device_index=0,
+                                      value=0.4, parameter_name="Dry/Wet")
+        assert result.get("snapped") is False, (
+            "float precision drift (<1e-5) must not be reported as snap"
+        )
+
+    def test_snapped_key_present_in_response(self):
+        """The ``snapped`` key must always be present in a successful response."""
+        from mcp_server.tools.devices import set_device_parameter
+
+        ctx = _make_single_ctx({"name": "Freq", "value": 440.0,
+                                 "value_string": "440 Hz", "min": 20.0, "max": 20000.0,
+                                 "display_value": 440})
+        result = set_device_parameter(ctx, track_index=0, device_index=0,
+                                      value=440.0, parameter_name="Freq")
+        assert "snapped" in result
