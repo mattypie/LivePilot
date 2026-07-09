@@ -12,6 +12,7 @@ import logging
 from fastmcp import Context
 
 from ..server import mcp
+from ..preview_studio.models import compute_session_fingerprint
 from . import engine
 
 logger = logging.getLogger(__name__)
@@ -375,6 +376,11 @@ def enter_wonder_mode(
         variant_count_actual=result.get("variant_count_actual", 0),
         degraded_reason=result.get("degraded_reason", ""),
         status="diagnosing",  # will transition below
+        # Stamped from the session_info already fetched above for diagnosis —
+        # no extra round-trip. Lets a later commit_preview_variant detect
+        # that the session's track topology changed since these variants'
+        # compiled_plan indices were built.
+        session_fingerprint=compute_session_fingerprint(session_info),
     )
     ws.transition_to("variants_ready")
 

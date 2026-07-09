@@ -449,3 +449,60 @@ def test_run_branch_async_no_undo_when_only_bridge_steps_succeed():
     assert len(undo_calls) == 0
     # A bridge step still counts as an applied step for status purposes.
     assert branch.status == "evaluated"
+
+
+# ── State-layer hardening: _EXPERIMENTS lock ──────────────────────────────────
+
+
+def test_concurrent_create_and_list_experiments_does_not_raise():
+    """Regression: _EXPERIMENTS is mutated from both threadpooled sync tools
+    (create_experiment) and event-loop async tools (run_experiment /
+    commit_branch_async). Without a lock, a reader's list_experiments()
+    iterating .values() can race a writer's insert (dict resized mid-
+    iteration → RuntimeError), and unsynchronized inserts risk lost updates.
+    A module-level lock around the dict ops closes both.
+
+    Kept deliberately light (small thread/iteration counts, no
+    sys.setswitchinterval tuning) — create_experiment_from_seeds builds real
+    branch objects and list_experiments() does an O(n) to_dict() sweep, so a
+    heavier version of this test is needlessly expensive on a loaded CI box
+    without adding meaningfully more coverage of the lock itself.
+    """
+    import threading
+    from mcp_server.experiment.engine import _EXPERIMENTS, _EXPERIMENTS_LOCK
+
+    with _EXPERIMENTS_LOCK:
+        _EXPERIMENTS.clear()
+    errors: list[Exception] = []
+
+    def _writer(worker_id: int) -> None:
+        try:
+            for j in range(15):
+                create_experiment_from_seeds(
+                    request_text=f"race {worker_id} {j}",
+                    seeds=[seed_from_move_id(f"m_{worker_id}_{j}")],
+                )
+        except Exception as exc:  # pragma: no cover - failure path only
+            errors.append(exc)
+
+    def _reader() -> None:
+        try:
+            for _ in range(20):
+                list_experiments()
+                get_experiment("nonexistent")
+        except Exception as exc:  # pragma: no cover - failure path only
+            errors.append(exc)
+
+    threads = (
+        [threading.Thread(target=_writer, args=(i,)) for i in range(8)]
+        + [threading.Thread(target=_reader) for _ in range(4)]
+    )
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent experiment store access raised: {errors!r}"
+    with _EXPERIMENTS_LOCK:
+        size = len(_EXPERIMENTS)
+    assert size == 8 * 15  # every insert landed — no dict corruption

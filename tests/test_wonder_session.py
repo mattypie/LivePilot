@@ -137,3 +137,75 @@ def test_diagnosis_to_dict():
     assert d["candidate_domains"] == ["arrangement", "transition"]
     assert d["confidence"] == 0.7
     assert "song_brain" in d["degraded_capabilities"]
+
+
+# ── State-layer hardening: lock + session fingerprint ────────────
+
+
+def test_session_fingerprint_defaults_empty():
+    """Absent fingerprint means 'no signal' — must default to empty string
+    so older/degraded sessions still commit without a staleness check."""
+    ws = WonderSession(session_id="ws_fp_default", request_text="test")
+    assert ws.session_fingerprint == ""
+
+
+def test_session_fingerprint_stamped_and_carried_in_to_dict():
+    ws = WonderSession(
+        session_id="ws_fp",
+        request_text="test",
+        session_fingerprint="abc123",
+    )
+    assert ws.session_fingerprint == "abc123"
+    assert ws.to_dict()["session_fingerprint"] == "abc123"
+
+
+def test_store_wonder_session_concurrent_hammer_does_not_raise():
+    """Regression: _wonder_sessions is mutated from both threadpooled sync
+    tools (enter_wonder_mode) and event-loop async tools (commit_preview_variant
+    via find_session_by_preview_set). Before the fix, store_wonder_session's
+    check-then-evict loop raced the same way as preview_studio's — two
+    threads could grab the same oldest_key and a second pop/del raised.
+
+    sys.setswitchinterval is lowered modestly (10 microseconds — 500x more
+    aggressive than the 5ms default, but well short of the 1us/0.1us extremes
+    that make thread scheduling itself pathologically expensive on a loaded
+    machine) to force fine-grained interleaving without risking a
+    multi-minute stall under CI/CPU contention. Verified in isolation to
+    reproduce the pre-fix KeyError/RuntimeError reliably (dozens of times
+    per run) while completing in well under a second.
+    """
+    import sys
+    import threading
+    from mcp_server.wonder_mode.session import _wonder_sessions_lock
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    with _wonder_sessions_lock:
+        _wonder_sessions.clear()
+    errors: list[Exception] = []
+
+    def _worker(worker_id: int) -> None:
+        try:
+            for j in range(150):
+                store_wonder_session(
+                    WonderSession(
+                        session_id=f"race_{worker_id}_{j}",
+                        request_text="race",
+                    )
+                )
+        except Exception as exc:  # pragma: no cover - failure path only
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=_worker, args=(i,)) for i in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old_interval)
+
+    assert errors == [], f"concurrent store_wonder_session raised: {errors!r}"
+    with _wonder_sessions_lock:
+        size = len(_wonder_sessions)
+    assert size <= 10  # _MAX_WONDER_SESSIONS

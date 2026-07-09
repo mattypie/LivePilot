@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from fastmcp import Context
 
 from ..runtime.degradation import DegradationInfo
@@ -24,6 +26,10 @@ _current_brain: SongBrain | None = None
 # Snapshot store: brain_id -> SongBrain, max 10 snapshots
 _brain_snapshots: dict[str, SongBrain] = {}
 _MAX_SNAPSHOTS = 10
+# Guards _brain_snapshots store/evict — the MCP server can service concurrent
+# tool calls, and store-then-evict was a read-modify-write on a shared dict
+# with no synchronization (same race shape flagged in the persistence stores).
+_snapshots_lock = threading.Lock()
 
 
 def _set_brain(ctx: Context, brain: SongBrain) -> None:
@@ -32,16 +38,24 @@ def _set_brain(ctx: Context, brain: SongBrain) -> None:
     _current_brain = brain
     ctx.lifespan_context["current_brain"] = brain
     # Save snapshot for later drift comparison
-    _brain_snapshots[brain.brain_id] = brain
-    # Evict oldest if over limit
-    while len(_brain_snapshots) > _MAX_SNAPSHOTS:
-        oldest_key = next(iter(_brain_snapshots))
-        del _brain_snapshots[oldest_key]
+    with _snapshots_lock:
+        _brain_snapshots[brain.brain_id] = brain
+        # Evict oldest if over limit
+        while len(_brain_snapshots) > _MAX_SNAPSHOTS:
+            oldest_key = next(iter(_brain_snapshots))
+            del _brain_snapshots[oldest_key]
 
 
 def _get_snapshot(brain_id: str) -> SongBrain | None:
     """Retrieve a past brain snapshot by ID."""
-    return _brain_snapshots.get(brain_id)
+    with _snapshots_lock:
+        return _brain_snapshots.get(brain_id)
+
+
+def _snapshot_ids() -> list[str]:
+    """List currently held snapshot ids (lock-guarded snapshot for error reporting)."""
+    with _snapshots_lock:
+        return list(_brain_snapshots.keys())
 
 
 def _get_ableton(ctx: Context):
@@ -371,7 +385,7 @@ def detect_identity_drift(
     if before_brain_id:
         before = _get_snapshot(before_brain_id)
         if before is None:
-            available = list(_brain_snapshots.keys())
+            available = _snapshot_ids()
             return {
                 "error": f"No snapshot found for brain_id '{before_brain_id}'",
                 "available_snapshots": available,

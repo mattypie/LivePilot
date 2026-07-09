@@ -2,11 +2,45 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 from ..runtime.degradation import DegradationInfo
+
+
+def compute_session_fingerprint(session_info: Optional[dict]) -> str:
+    """Lightweight fingerprint of session topology (track_count + ordered
+    track names).
+
+    PreviewSet and WonderSession cache compiled plans that reference
+    positional track/device indices. Those indices are only valid against
+    the session topology that existed when the plan was compiled — if the
+    user adds/removes/reorders tracks before the plan is committed, replaying
+    those indices can silently hit the wrong track.
+
+    This helper is the single source of truth for that fingerprint, shared
+    by preview_studio and wonder_mode so both stamp/verify it the same way.
+    Callers stamp it at creation time from session_info they already fetched
+    (never triggers its own Ableton round-trip). At commit/replay time they
+    fetch a fresh session_info and compare fingerprints.
+
+    Returns "" when session_info is missing/malformed — an empty fingerprint
+    means "no signal available" and callers must skip the staleness check
+    (this keeps older cached/persisted objects, built before this field
+    existed, committable).
+    """
+    if not isinstance(session_info, dict) or not session_info:
+        return ""
+    tracks = session_info.get("tracks")
+    if not isinstance(tracks, list):
+        tracks = []
+    names = [str(t.get("name", "")) for t in tracks if isinstance(t, dict)]
+    track_count = session_info.get("track_count", len(names))
+    seed = json.dumps({"track_count": track_count, "track_names": names}, sort_keys=True)
+    return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -66,6 +100,11 @@ class PreviewSet:
     # can inspect .degradation.is_degraded to tell synthesized preview
     # topology apart from a real kernel-backed compile.
     degradation: DegradationInfo = field(default_factory=DegradationInfo)
+    # Session-identity guard — see compute_session_fingerprint(). Stamped at
+    # creation time from the session_info the creator already fetched. Empty
+    # string means "no signal" (older objects, or created without a live
+    # session) and callers must skip the staleness check.
+    session_fingerprint: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -79,4 +118,5 @@ class PreviewSet:
             "status": self.status,
             "variant_count": len(self.variants),
             "degradation": self.degradation.to_dict(),
+            "session_fingerprint": self.session_fingerprint,
         }

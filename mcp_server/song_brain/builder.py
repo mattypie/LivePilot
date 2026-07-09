@@ -46,7 +46,6 @@ def build_song_brain(
     role_graph = role_graph or {}
     recent_moves = recent_moves or []
 
-    brain_id = _compute_brain_id(session_info, scenes)
     built_from: dict[str, bool] = {
         "session_info": True,
         "scenes": bool(scenes),
@@ -73,6 +72,13 @@ def build_song_brain(
     )
 
     drift_risk = _estimate_drift_risk(recent_moves, sacred)
+
+    # Content-aware brain_id: computed AFTER identity_core/sections/energy_arc
+    # so it reflects actual musical content, not just track/scene counts.
+    # See _compute_brain_id docstring.
+    brain_id = _compute_brain_id(
+        session_info, scenes, identity_core, energy_arc, sections
+    )
 
     # Evidence-weighted confidence adjustment
     # Weights: motif=0.4, composition=0.2, role_graph=0.15, scenes=0.15, recent_moves=0.1
@@ -612,11 +618,43 @@ def detect_identity_drift(
 # ── Helpers ───────────────────────────────────────────────────────
 
 
-def _compute_brain_id(session_info: dict, scenes: list[dict]) -> str:
-    """Deterministic brain ID from session state."""
+def _compute_brain_id(
+    session_info: dict,
+    scenes: list[dict],
+    identity_core: str = "",
+    energy_arc: Optional[list[float]] = None,
+    section_purposes: Optional[list[SectionPurpose]] = None,
+) -> str:
+    """Deterministic brain ID from session state AND musical content.
+
+    Previously hashed only {tempo, track_count, scene_count}. A note-only
+    edit (same track/scene counts, different melodic/harmonic/energy
+    content) produced the SAME brain_id every time. detect_identity_drift
+    keys its snapshot store by brain_id (song_brain/tools.py
+    _brain_snapshots), so an unchanged id meant every "after" build silently
+    overwrote its own "before" baseline in that dict and drift always read
+    0.0 even when the song's actual identity had shifted.
+
+    Folding identity_core / energy_arc / section signatures in keeps the id
+    STABLE across identical builds (same inputs -> same id — still a pure,
+    deterministic function) while making it change whenever the song's
+    inferred content changes, even when track/scene counts don't.
+    """
+    section_sig = [
+        {
+            "section_id": s.section_id,
+            "energy_level": round(s.energy_level, 3),
+            "emotional_intent": s.emotional_intent,
+            "is_payoff": s.is_payoff,
+        }
+        for s in (section_purposes or [])
+    ]
     seed = json.dumps({
         "tempo": session_info.get("tempo"),
         "track_count": session_info.get("track_count"),
         "scene_count": len(scenes),
+        "identity_core": identity_core,
+        "energy_arc": [round(e, 3) for e in (energy_arc or [])],
+        "section_purposes": section_sig,
     }, sort_keys=True)
     return hashlib.sha256(seed.encode()).hexdigest()[:12]

@@ -15,6 +15,7 @@ from fastmcp import Context
 
 from ..server import mcp
 from . import engine
+from .models import compute_session_fingerprint
 import logging
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,11 @@ def create_preview_set(
             source_kernel_id=kernel_id,
             variants=preview_variants,
             created_at_ms=now,
+            # Carry forward the fingerprint the WonderSession stamped at
+            # enter_wonder_mode time so commit_preview_variant can still
+            # detect a topology change even though this PreviewSet was
+            # built from ws.variants rather than a fresh kernel fetch.
+            session_fingerprint=getattr(ws, "session_fingerprint", ""),
         )
         engine.store_preview_set(ps)
 
@@ -285,6 +291,40 @@ async def commit_preview_variant(
             "error": f"Variant {variant_id} not found in set {set_id}",
             "available_variants": available,
         }
+
+    # ── Session-identity guard (state-layer hardening) ──
+    # PreviewSet.session_fingerprint is stamped at creation time from the
+    # session_info the creator already had in hand (see engine.py /
+    # create_preview_set). The compiled_plan cached on each variant carries
+    # positional track/device indices that are only valid against that same
+    # topology. If the fingerprint is set, re-check it against a fresh
+    # get_session_info before replaying those indices — a track added/
+    # removed/reordered since the preview was built means "commit" would
+    # silently apply to the wrong track. Absent fingerprint (older/degraded
+    # objects predating this field) skips the check entirely — no new
+    # round-trip, no behavior change for them.
+    if ps.session_fingerprint:
+        ableton = _get_ableton(ctx)
+        fresh_session_info: dict = {}
+        try:
+            fresh_session_info = await ableton.send_command_async("get_session_info", {}) or {}
+        except Exception as exc:
+            logger.debug("commit_preview_variant: session refresh failed: %s", exc)
+            fresh_session_info = {}
+        if isinstance(fresh_session_info, dict) and "error" not in fresh_session_info:
+            current_fingerprint = compute_session_fingerprint(fresh_session_info)
+            if current_fingerprint and current_fingerprint != ps.session_fingerprint:
+                return {
+                    "error": (
+                        "session changed since preview was created — "
+                        "rebuild the preview set"
+                    ),
+                    "code": "STATE_ERROR",
+                    "set_id": set_id,
+                    "variant_id": variant_id,
+                }
+        # else: couldn't refresh (Ableton unreachable) — fail open rather
+        # than blocking a legitimate commit on a transient fetch error.
 
     # ── Truth-gap guard: refuse to "commit" a variant that can't execute ──
     # If the variant was flagged blocked/failed upstream or lacks a

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import threading
 import time
 from typing import Optional
 
@@ -29,8 +30,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ── In-memory experiment store ───────────────────────────────────────────────
+#
+# _EXPERIMENTS is mutated from both threadpooled sync tools (create_experiment)
+# and event-loop async tools (run_experiment / commit_branch_async) — a
+# module-level lock around the dict ops keeps inserts/reads race-free under
+# mixed sync/async concurrent callers, mirroring preview_studio.engine and
+# wonder_mode.session.
 
 _EXPERIMENTS: dict[str, ExperimentSet] = {}
+_EXPERIMENTS_LOCK = threading.Lock()
 
 
 def _gen_id(prefix: str, seed: str) -> str:
@@ -90,7 +98,8 @@ def create_experiment_from_seeds(
         created_at_ms=now,
     )
 
-    _EXPERIMENTS[exp_id] = experiment
+    with _EXPERIMENTS_LOCK:
+        _EXPERIMENTS[exp_id] = experiment
     return experiment
 
 
@@ -115,12 +124,15 @@ def create_experiment(
 
 def get_experiment(experiment_id: str) -> Optional[ExperimentSet]:
     """Get an experiment by ID."""
-    return _EXPERIMENTS.get(experiment_id)
+    with _EXPERIMENTS_LOCK:
+        return _EXPERIMENTS.get(experiment_id)
 
 
 def list_experiments() -> list[dict]:
     """List all experiment sets."""
-    return [exp.to_dict() for exp in _EXPERIMENTS.values()]
+    with _EXPERIMENTS_LOCK:
+        exps = list(_EXPERIMENTS.values())
+    return [exp.to_dict() for exp in exps]
 
 # ── Run experiments (requires Ableton connection) ────────────────────────────
 
@@ -443,7 +455,8 @@ def commit_branch(
 
 def discard_experiment(experiment_id: str) -> dict:
     """Discard an entire experiment set."""
-    exp = _EXPERIMENTS.get(experiment_id)
+    with _EXPERIMENTS_LOCK:
+        exp = _EXPERIMENTS.get(experiment_id)
     if not exp:
         return {"error": f"Experiment {experiment_id} not found"}
 

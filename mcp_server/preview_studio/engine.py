@@ -8,29 +8,43 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from typing import Optional
 
 from ..runtime.degradation import DegradationInfo
-from .models import PreviewSet, PreviewVariant
+from .models import PreviewSet, PreviewVariant, compute_session_fingerprint
 
 
 # ── In-memory store ───────────────────────────────────────────────
+#
+# _preview_sets is mutated from both threadpooled sync tools (e.g.
+# compare_preview_variants) and event-loop async tools (e.g.
+# commit_preview_variant) — two concurrent create_preview_set calls used to
+# be able to race in store_preview_set's check-then-evict loop: both read
+# the same `oldest_key`, both `del` it, and the second raised KeyError. One
+# module-level lock around the get/store/evict critical sections closes
+# that race.
 
 _preview_sets: dict[str, PreviewSet] = {}
+_preview_sets_lock = threading.Lock()
 _MAX_PREVIEW_SETS = 20
 
 
 def get_preview_set(set_id: str) -> Optional[PreviewSet]:
-    return _preview_sets.get(set_id)
+    with _preview_sets_lock:
+        return _preview_sets.get(set_id)
 
 
 def store_preview_set(ps: PreviewSet) -> None:
-    _preview_sets[ps.set_id] = ps
-    # Evict oldest sets if over limit
-    while len(_preview_sets) > _MAX_PREVIEW_SETS:
-        oldest_key = next(iter(_preview_sets))
-        del _preview_sets[oldest_key]
+    with _preview_sets_lock:
+        _preview_sets[ps.set_id] = ps
+        # Evict oldest sets if over limit
+        while len(_preview_sets) > _MAX_PREVIEW_SETS:
+            oldest_key = next(iter(_preview_sets), None)
+            if oldest_key is None:
+                break
+            _preview_sets.pop(oldest_key, None)
 
 
 # Statuses that represent work a user (or caller) has already invested in:
@@ -50,13 +64,13 @@ def _resolve_set_id(base_id: str) -> str:
     to a distinct, still-deterministic id (base_id + a monotonic suffix) so the
     protected set survives and the new set gets its own slot.
     """
-    existing = _preview_sets.get(base_id)
+    existing = get_preview_set(base_id)
     if existing is None or existing.status not in _PROTECTED_STATUSES:
         return base_id
     suffix = 2
     while True:
         candidate = f"{base_id}_b{suffix}"
-        occupant = _preview_sets.get(candidate)
+        occupant = get_preview_set(candidate)
         if occupant is None or occupant.status not in _PROTECTED_STATUSES:
             return candidate
         suffix += 1
@@ -86,6 +100,13 @@ def create_preview_set(
         synthesizes an empty-but-valid kernel (see ``_build_triptych``) and
         flags the resulting PreviewSet with ``degradation.is_degraded=True``
         so callers can tell a synthesized compile from a real one.
+
+        When kernel carries a real ``session_info`` (track topology), the
+        resulting PreviewSet is stamped with a session_fingerprint so a
+        later commit can detect that the session's track/device layout
+        changed since this plan's indices were compiled — no extra Ableton
+        round-trip is made here, we just hash data the caller already
+        fetched.
     """
     set_id = _resolve_set_id(_compute_set_id(request_text, kernel_id))
     now = int(time.time() * 1000)
@@ -117,6 +138,13 @@ def create_preview_set(
             request_text, moves, song_brain, taste_graph, set_id, now, kernel,
         )
 
+    # Stamp session identity from data the caller already fetched (kernel's
+    # session_info) — never a new round-trip. Absent/synthesized kernels
+    # yield "", which downstream commit checks treat as "no signal".
+    session_fingerprint = compute_session_fingerprint(
+        (kernel or {}).get("session_info")
+    )
+
     ps = PreviewSet(
         set_id=set_id,
         request_text=request_text,
@@ -125,6 +153,7 @@ def create_preview_set(
         variants=variants,
         created_at_ms=now,
         degradation=degradation,
+        session_fingerprint=session_fingerprint,
     )
     store_preview_set(ps)
     return ps
@@ -433,7 +462,8 @@ def commit_variant(preview_set: PreviewSet, variant_id: str) -> Optional[Preview
 
 def discard_set(set_id: str) -> bool:
     """Discard an entire preview set."""
-    ps = _preview_sets.pop(set_id, None)
+    with _preview_sets_lock:
+        ps = _preview_sets.pop(set_id, None)
     if ps:
         ps.status = "discarded"
         for v in ps.variants:

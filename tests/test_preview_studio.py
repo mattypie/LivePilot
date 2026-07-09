@@ -584,3 +584,287 @@ def test_create_preview_set_does_not_clobber_committed_set():
     ps3a = create_preview_set(request_text="non protected dedup", kernel_id="np_kern")
     ps3b = create_preview_set(request_text="non protected dedup", kernel_id="np_kern")
     assert ps3a.set_id == ps3b.set_id
+
+
+# ── State-layer hardening: lock + session fingerprint ────────────
+
+
+def test_store_preview_set_concurrent_hammer_does_not_raise():
+    """Regression: _preview_sets is mutated from both threadpooled sync
+    tools and event-loop async tools. Before the fix, store_preview_set's
+    check-then-evict loop raced: two threads could observe the same
+    `oldest_key` and the second `del` raised KeyError (or the shared
+    dict-iteration raised 'dictionary changed size during iteration').
+    A module-level lock around get/store/evict closes that race.
+
+    sys.setswitchinterval is lowered modestly (10 microseconds — 500x more
+    aggressive than the 5ms default, but well short of the 1us/0.1us extremes
+    that make thread scheduling itself pathologically expensive on a loaded
+    machine) to force fine-grained interleaving without risking a
+    multi-minute stall under CI/CPU contention. Verified in isolation to
+    reproduce the pre-fix KeyError/RuntimeError reliably (dozens of times
+    per run) while completing in well under a second.
+    """
+    import sys
+    import threading
+    from mcp_server.preview_studio.engine import (
+        _preview_sets,
+        _preview_sets_lock,
+        _MAX_PREVIEW_SETS,
+        store_preview_set,
+    )
+    from mcp_server.preview_studio.models import PreviewSet
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    with _preview_sets_lock:
+        _preview_sets.clear()
+    errors: list[Exception] = []
+
+    def _worker(worker_id: int) -> None:
+        try:
+            for j in range(150):
+                ps = PreviewSet(
+                    set_id=f"race_{worker_id}_{j}",
+                    request_text="race",
+                    source_kernel_id="k",
+                )
+                store_preview_set(ps)
+        except Exception as exc:  # pragma: no cover - failure path only
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=_worker, args=(i,)) for i in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old_interval)
+
+    assert errors == [], f"concurrent store_preview_set raised: {errors!r}"
+    assert len(_preview_sets) <= _MAX_PREVIEW_SETS
+
+
+def test_create_preview_set_stamps_session_fingerprint_from_kernel():
+    """A real kernel's session_info should be hashed into
+    PreviewSet.session_fingerprint at creation time — no extra round-trip,
+    just a hash of data the caller already fetched."""
+    from mcp_server.preview_studio.engine import create_preview_set
+    from mcp_server.preview_studio.models import compute_session_fingerprint
+
+    session_info = {
+        "track_count": 2,
+        "tracks": [{"index": 0, "name": "Kick"}, {"index": 1, "name": "Bass"}],
+    }
+    ps = create_preview_set(
+        request_text="fingerprint stamping test",
+        kernel_id="k_fp",
+        kernel={"session_info": session_info, "mode": "improve"},
+    )
+    assert ps.session_fingerprint
+    assert ps.session_fingerprint == compute_session_fingerprint(session_info)
+
+
+def test_create_preview_set_without_kernel_has_no_fingerprint():
+    """No kernel supplied (degraded path) → empty fingerprint, meaning
+    'no signal' rather than a false match/mismatch downstream."""
+    from mcp_server.preview_studio.engine import create_preview_set
+
+    ps = create_preview_set(
+        request_text="no kernel fingerprint test",
+        kernel_id="k_nofp",
+    )
+    assert ps.session_fingerprint == ""
+
+
+def test_commit_preview_variant_fingerprint_mismatch_returns_state_error(monkeypatch):
+    """If the session's track topology changed since the preview set was
+    built, commit must refuse with a structured STATE_ERROR instead of
+    replaying stale track/device indices against the new topology."""
+    import asyncio
+    from mcp_server.preview_studio.tools import commit_preview_variant
+    from mcp_server.preview_studio.engine import store_preview_set
+    from mcp_server.preview_studio.models import (
+        PreviewSet, PreviewVariant, compute_session_fingerprint,
+    )
+    import mcp_server.runtime.execution_router as execution_router
+    import time
+
+    built_session_info = {
+        "track_count": 2,
+        "tracks": [{"index": 0, "name": "Kick"}, {"index": 1, "name": "Bass"}],
+    }
+    variant = PreviewVariant(
+        variant_id="v_fp_mismatch",
+        label="safe",
+        intent="test fingerprint mismatch",
+        compiled_plan=[{"tool": "set_track_volume", "params": {"track_index": 0, "volume": 0.5}}],
+        identity_effect="preserves",
+        move_id="test_move",
+    )
+    ps = PreviewSet(
+        set_id="ps_fp_mismatch",
+        request_text="fingerprint mismatch",
+        strategy="binary",
+        source_kernel_id="k",
+        variants=[variant],
+        created_at_ms=int(time.time() * 1000),
+        session_fingerprint=compute_session_fingerprint(built_session_info),
+    )
+    store_preview_set(ps)
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError("compiled plan must not execute on a fingerprint mismatch")
+
+    monkeypatch.setattr(execution_router, "execute_plan_steps_async", _fail_if_called)
+
+    class _Ableton:
+        async def send_command_async(self, cmd, params=None):
+            if cmd == "get_session_info":
+                # Topology changed: a track was added since the preview was built.
+                return {
+                    "track_count": 3,
+                    "tracks": [
+                        {"index": 0, "name": "Kick"},
+                        {"index": 1, "name": "Bass"},
+                        {"index": 2, "name": "New Track"},
+                    ],
+                }
+            return {"ok": True}
+
+    ctx = SimpleNamespace(lifespan_context={"ableton": _Ableton()})
+    result = asyncio.run(commit_preview_variant(
+        ctx, set_id="ps_fp_mismatch", variant_id="v_fp_mismatch",
+    ))
+
+    assert result.get("code") == "STATE_ERROR"
+    assert "error" in result
+    assert "session changed" in result["error"].lower()
+    # State must be untouched — a rejected commit doesn't flip preview-set status.
+    assert ps.status != "committed"
+
+
+def test_commit_preview_variant_fingerprint_match_proceeds(monkeypatch):
+    """A fresh session_info that hashes to the same fingerprint must NOT
+    block commit — the topology is unchanged, indices are still valid."""
+    import asyncio
+    from mcp_server.preview_studio.tools import commit_preview_variant
+    from mcp_server.preview_studio.engine import store_preview_set
+    from mcp_server.preview_studio.models import (
+        PreviewSet, PreviewVariant, compute_session_fingerprint,
+    )
+    import mcp_server.runtime.execution_router as execution_router
+    import time
+
+    session_info = {
+        "track_count": 2,
+        "tracks": [{"index": 0, "name": "Kick"}, {"index": 1, "name": "Bass"}],
+    }
+    variant = PreviewVariant(
+        variant_id="v_fp_match",
+        label="safe",
+        intent="test fingerprint match",
+        compiled_plan=[{"tool": "set_track_volume", "params": {"track_index": 0, "volume": 0.5}}],
+        identity_effect="preserves",
+        move_id="test_move",
+    )
+    ps = PreviewSet(
+        set_id="ps_fp_match",
+        request_text="fingerprint match",
+        strategy="binary",
+        source_kernel_id="k",
+        variants=[variant],
+        created_at_ms=int(time.time() * 1000),
+        session_fingerprint=compute_session_fingerprint(session_info),
+    )
+    store_preview_set(ps)
+
+    executed_tools = []
+
+    async def _fake_exec_async(steps, ableton=None, bridge=None, mcp_registry=None,
+                                ctx=None, stop_on_failure=True):
+        for s in steps:
+            executed_tools.append(s.get("tool"))
+        return [
+            SimpleNamespace(ok=True, tool=s.get("tool"), backend="remote_command",
+                             result={"ok": True}, error="")
+            for s in steps
+        ]
+
+    monkeypatch.setattr(execution_router, "execute_plan_steps_async", _fake_exec_async)
+
+    class _Ableton:
+        async def send_command_async(self, cmd, params=None):
+            if cmd == "get_session_info":
+                # Same topology — different dict instance, same shape.
+                return {
+                    "track_count": 2,
+                    "tracks": [{"index": 0, "name": "Kick"}, {"index": 1, "name": "Bass"}],
+                }
+            return {"ok": True}
+
+    ctx = SimpleNamespace(lifespan_context={"ableton": _Ableton()})
+    result = asyncio.run(commit_preview_variant(
+        ctx, set_id="ps_fp_match", variant_id="v_fp_match",
+    ))
+
+    assert executed_tools == ["set_track_volume"]
+    assert result["committed"] is True
+    assert result["status"] == "committed"
+
+
+def test_commit_preview_variant_absent_fingerprint_skips_check(monkeypatch):
+    """Objects predating session_fingerprint (empty string) must still
+    commit — and must not even attempt a session refresh, since the
+    ableton mock below has no send_command_async at all."""
+    import asyncio
+    from mcp_server.preview_studio.tools import commit_preview_variant
+    from mcp_server.preview_studio.engine import store_preview_set
+    from mcp_server.preview_studio.models import PreviewSet, PreviewVariant
+    import mcp_server.runtime.execution_router as execution_router
+    import time
+
+    variant = PreviewVariant(
+        variant_id="v_fp_absent",
+        label="safe",
+        intent="test absent fingerprint",
+        compiled_plan=[{"tool": "set_track_volume", "params": {"track_index": 0, "volume": 0.5}}],
+        identity_effect="preserves",
+        move_id="test_move",
+    )
+    ps = PreviewSet(
+        set_id="ps_fp_absent",
+        request_text="absent fingerprint",
+        strategy="binary",
+        source_kernel_id="k",
+        variants=[variant],
+        created_at_ms=int(time.time() * 1000),
+        # session_fingerprint left at its default "" — no signal available.
+    )
+    assert ps.session_fingerprint == ""
+    store_preview_set(ps)
+
+    async def _fake_exec_async(steps, ableton=None, bridge=None, mcp_registry=None,
+                                ctx=None, stop_on_failure=True):
+        return [
+            SimpleNamespace(ok=True, tool=s.get("tool"), backend="remote_command",
+                             result={"ok": True}, error="")
+            for s in steps
+        ]
+
+    monkeypatch.setattr(execution_router, "execute_plan_steps_async", _fake_exec_async)
+
+    class _Ableton:
+        """Deliberately has no send_command_async — proves the fingerprint
+        check is skipped entirely (not merely tolerant of a fetch error)."""
+        def send_command(self, cmd, params=None):
+            raise AssertionError("commit should not call sync send_command")
+
+    ctx = SimpleNamespace(lifespan_context={"ableton": _Ableton()})
+    result = asyncio.run(commit_preview_variant(
+        ctx, set_id="ps_fp_absent", variant_id="v_fp_absent",
+    ))
+
+    assert result["committed"] is True
+    assert result["status"] == "committed"

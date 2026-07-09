@@ -220,3 +220,57 @@ def test_enter_wonder_mode_fetches_session_info_once():
         f"expected exactly 1 get_session_info call, got "
         f"{ableton.calls.get('get_session_info')}"
     )
+
+
+# ── State-layer hardening: session fingerprint stamping ──────────
+
+
+def test_enter_wonder_mode_stamps_session_fingerprint():
+    """WonderSession.session_fingerprint must be derived from the same
+    session_info enter_wonder_mode already fetched for diagnosis — no
+    extra round-trip — and must match compute_session_fingerprint()
+    applied to that exact payload, so a later commit can detect drift."""
+    import types
+    from mcp_server.wonder_mode import tools as wonder_tools
+    from mcp_server.wonder_mode.session import get_wonder_session
+    from mcp_server.preview_studio.models import compute_session_fingerprint
+
+    session_info = {
+        "tracks": [{"index": 0, "name": "Kick"}, {"index": 1, "name": "Bass"}],
+        "track_count": 2,
+        "tempo": 120,
+    }
+
+    class _Ableton:
+        def send_command(self, command, params=None):
+            if command == "get_session_info":
+                return session_info
+            return {"error": "unsupported"}
+
+    ctx = types.SimpleNamespace(lifespan_context={"ableton": _Ableton()})
+    result = wonder_tools.enter_wonder_mode(ctx, request_text="stamp fingerprint test")
+
+    ws = get_wonder_session(result["wonder_session_id"])
+    assert ws is not None
+    assert ws.session_fingerprint != ""
+    assert ws.session_fingerprint == compute_session_fingerprint(session_info)
+
+
+def test_enter_wonder_mode_session_fetch_failure_yields_empty_fingerprint():
+    """When Ableton is unreachable, session_info degrades to {} and the
+    fingerprint must be '' (no signal) rather than a hash of an empty
+    dict — downstream commit checks must skip, not false-mismatch."""
+    import types
+    from mcp_server.wonder_mode import tools as wonder_tools
+    from mcp_server.wonder_mode.session import get_wonder_session
+
+    class _BrokenAbleton:
+        def send_command(self, command, params=None):
+            raise ConnectionError("no Ableton")
+
+    ctx = types.SimpleNamespace(lifespan_context={"ableton": _BrokenAbleton()})
+    result = wonder_tools.enter_wonder_mode(ctx, request_text="broken session test")
+
+    ws = get_wonder_session(result["wonder_session_id"])
+    assert ws is not None
+    assert ws.session_fingerprint == ""
