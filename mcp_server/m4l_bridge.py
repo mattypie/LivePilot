@@ -23,6 +23,7 @@ OSC address convention:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import json
 import random
@@ -159,15 +160,21 @@ class MidiToolCache:
         self._context: Optional[dict] = None
         self._notes: Optional[list] = None
         self._last_seen = 0.0
+        self._request_time = 0.0
         self._connected = False
         self._target_tool: Optional[str] = None
         self._target_params: dict = {}
 
     def set_request(self, context: dict, notes: list) -> None:
         with self._lock:
+            now = time.monotonic()
             self._context = context
             self._notes = notes
-            self._last_seen = time.monotonic()
+            self._last_seen = now
+            # Timestamp the request payload independently of _last_seen so a
+            # later mark_ready() heartbeat (which bumps _last_seen for
+            # is_connected) cannot resurrect an expired context/notes payload.
+            self._request_time = now
             self._connected = True
 
     def mark_ready(self) -> None:
@@ -180,7 +187,7 @@ class MidiToolCache:
         with self._lock:
             if self._context is None:
                 return None
-            age = time.monotonic() - self._last_seen
+            age = time.monotonic() - self._request_time
             if age > self._max_age:
                 return None
             return dict(self._context)
@@ -189,7 +196,7 @@ class MidiToolCache:
         with self._lock:
             if self._notes is None:
                 return None
-            age = time.monotonic() - self._last_seen
+            age = time.monotonic() - self._request_time
             if age > self._max_age:
                 return None
             return list(self._notes)
@@ -738,7 +745,8 @@ class SpectralReceiver(asyncio.DatagramProtocol):
         """Decode a /miditool/request packet and dispatch to the configured handler.
 
         Payload: base64(JSON({request_id, context, notes})).
-        Packet arrives on the UDP receive thread; the registered handler is
+        Packet arrives on the asyncio event-loop thread (SpectralReceiver is a
+        DatagramProtocol, not a separate thread); the registered handler is
         expected to schedule work on an event loop rather than block here.
         """
         try:
@@ -886,6 +894,7 @@ class M4LBridge:
         # essentially never block; _safe_sendto guards the rare case anyway.
         self._sock.setblocking(False)
         self._m4l_addr = ("127.0.0.1", 9881)
+        self._closed = False
         self._cmd_lock: Optional[asyncio.Lock] = None
         # BUG-audit-C1: send_capture uses _capture_future, which is
         # independent of _response_callback used by send_command.
@@ -899,6 +908,16 @@ class M4LBridge:
             self.receiver.set_miditool_handler(self._dispatch_miditool_request)
             if self.receiver.miditool_cache is None and miditool_cache is not None:
                 self.receiver.miditool_cache = miditool_cache
+
+        # Best-effort: release this bridge's OUTGOING UDP 9881 send socket on a
+        # clean interpreter exit. NOTE: this is NOT the 9880 analyzer listener —
+        # that socket lives on the SpectralReceiver transport (created in the
+        # server lifespan) and is closed in the lifespan finally. The OS reclaims
+        # BOTH ports on any process death, INCLUDING the SIGTERM/SIGKILL the
+        # orphan-kill runbook uses (which bypasses atexit). The real defense
+        # against an orphan squatting 9880 is the §9b kill-orphan procedure +
+        # reconnect_bridge, not this handler.
+        atexit.register(self.close)
 
     def _safe_sendto(self, data: bytes) -> None:
         """Send a UDP packet without ever blocking the event loop.
@@ -922,7 +941,8 @@ class M4LBridge:
         """Handle a decoded /miditool/request: run the configured generator,
         send /miditool/response back with {request_id, notes}.
 
-        Invoked from SpectralReceiver on the UDP receive thread. We do not
+        Invoked from SpectralReceiver on the asyncio event-loop thread
+        (it is a DatagramProtocol, not a separate UDP thread). We do not
         await anything here — generators are synchronous, pure Python.
         If no target is configured, pass notes through unchanged (identity).
         """
@@ -1064,7 +1084,7 @@ class M4LBridge:
     async def cancel_capture_future(self) -> None:
         """Resolve any in-progress capture future with a stopped result.
 
-        Does NOT acquire _cmd_lock — send_capture holds it during recording.
+        Does NOT acquire _capture_lock — send_capture holds it during recording.
         Resolving (not cancelling) the future lets send_capture return a
         clean partial-result dict instead of raising CancelledError.
         """
@@ -1118,4 +1138,22 @@ class M4LBridge:
         return addr_bytes + tag_bytes + arg_data
 
     def close(self) -> None:
-        self._sock.close()
+        """Close the outgoing UDP socket and mark this bridge as shut down.
+
+        Idempotent — safe to call multiple times (from the server lifespan
+        finally block AND from the atexit handler registered at construction).
+
+        Releases this bridge's OUTGOING UDP 9881 send socket (M4LBridge._sock).
+        This is NOT the 9880 analyzer listener — that is the SpectralReceiver
+        transport, closed in the server lifespan finally. Called from both the
+        lifespan shutdown and an atexit handler; on abrupt process death the OS
+        reclaims the socket regardless (see the §9b orphan-kill runbook for the
+        actual stale-9880 defense).
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._sock.close()
+        except OSError:
+            pass
