@@ -73,6 +73,74 @@ jobs:
             exit 1
           fi
           echo ".amxd embeds 'var VERSION = \"$VERSION\"' — source/freeze in sync."
+      - name: .amxd embeds every bridge command from livepilot_bridge.js
+        # The version-string check alone can be satisfied by the documented
+        # 6-byte binary patch after real JS logic changes. Frozen .amxd files
+        # embed the JS source as plain text, so diff the full set of
+        # `case "<command>":` names from source against the binary's strings.
+        # No untrusted inputs — both files are repo-local.
+        run: |
+          python3 - <<'PYEOF'
+          import re, subprocess, sys
+          src = open("m4l_device/livepilot_bridge.js", encoding="utf-8").read()
+          cmds = sorted(set(re.findall(r'case\s*"([^"]+)"\s*:', src)))
+          if not cmds:
+              print("::error::No case \"...\" commands parsed from livepilot_bridge.js")
+              sys.exit(1)
+          blob = subprocess.check_output(["strings", "m4l_device/LivePilot_Analyzer.amxd"], text=True)
+          missing = [c for c in cmds if f'case "{c}"' not in blob]
+          if missing:
+              print(f"::error::.amxd freeze is stale — {len(missing)} bridge command(s) in "
+                    f"livepilot_bridge.js are missing from the frozen binary: {missing}")
+              print("::error::A real Max re-freeze is required (binary version patch is not enough).")
+              sys.exit(1)
+          print(f"All {len(cmds)} bridge commands present in the frozen .amxd.")
+          PYEOF
+
+  remote-script-py311:
+    # The Remote Script runs inside Ableton's embedded Python (3.11 on Live
+    # 12.3/12.4) while the MCP-server floor is 3.12. Nothing else enforces
+    # that remote_script/ stays 3.11-compatible — this job does.
+    # No untrusted inputs: compiles repo-local code only.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: remote_script compiles under Python 3.11
+        run: python -m compileall -q remote_script/LivePilot
+      - name: vermin — no >3.11 stdlib/API usage in remote_script
+        run: |
+          pip install --quiet vermin
+          vermin --target=3.11- --violations --no-tips remote_script/LivePilot
+
+  mcpb-build:
+    # build_mcpb.sh produces the release asset that silently shipped missing
+    # for four consecutive releases (v1.17–v1.20.2). Build it on every push
+    # so a broken script/manifest is caught at PR time, not release time.
+    # No untrusted inputs, no publishing, no secrets.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build MCPB bundle
+        run: bash scripts/build_mcpb.sh
+      - name: Assert bundle exists and is non-trivial
+        run: |
+          BUNDLE=$(ls dist/livepilot-*.mcpb 2>/dev/null | head -1)
+          if [ -z "$BUNDLE" ]; then
+            echo "::error::build_mcpb.sh produced no dist/livepilot-*.mcpb"
+            exit 1
+          fi
+          SIZE=$(wc -c < "$BUNDLE")
+          echo "Built $BUNDLE ($SIZE bytes)"
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::MCPB bundle is suspiciously small (<1MB) — staging likely broke"
+            exit 1
+          fi
 
   js-entrypoint:
     runs-on: ubuntu-latest

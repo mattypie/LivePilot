@@ -137,6 +137,33 @@ function pipInstall(venvPy) {
 }
 
 /**
+ * Content hash of requirements.txt — the venv staleness signal.
+ *
+ * The previous check was a hardcoded import list that silently drifted from
+ * requirements.txt (grpcio/protobuf were added for the Splice gRPC surface
+ * but never joined the list, so upgrading users kept a venv without them and
+ * the feature silently disabled itself). Hashing the file makes staleness
+ * detection automatically correct for every future dependency change.
+ */
+function requirementsHash() {
+  const crypto = require("crypto");
+  const reqs = fs.readFileSync(path.join(ROOT, "requirements.txt"));
+  return crypto.createHash("sha256").update(reqs).digest("hex");
+}
+
+function venvStampPath() {
+  return path.join(ROOT, VENV_DIR, ".requirements-sha256");
+}
+
+function writeVenvStamp() {
+  try {
+    fs.writeFileSync(venvStampPath(), requirementsHash() + "\n");
+  } catch {
+    // Non-fatal: worst case the next run reinstalls.
+  }
+}
+
+/**
  * Ensure a local .venv exists with dependencies installed.
  * Returns the path to the venv Python binary.
  */
@@ -144,21 +171,21 @@ function ensureVenv(systemPython, prefixArgs) {
   const prefix = prefixArgs || [];
   const venvPy = venvPython();
 
-  // Check if venv already exists and has our deps
+  // Check if venv already exists and matches the current requirements.txt
   if (fs.existsSync(venvPy)) {
+    let stamp = null;
     try {
-      execFileSync(venvPy, ["-c", "import fastmcp; import midiutil; import pretty_midi; import numpy; import pyloudnorm; import soundfile; import scipy; import mutagen"], {
-        encoding: "utf-8",
-        timeout: 10000,
-        stdio: "pipe",
-      });
-      return venvPy; // venv exists and all deps importable
+      stamp = fs.readFileSync(venvStampPath(), "utf-8").trim();
     } catch {
-      // venv exists but deps missing — reinstall
-      console.error("LivePilot: reinstalling Python dependencies...");
-      pipInstall(venvPy);
-      return venvPy;
+      stamp = null; // pre-hash venv (or stamp deleted) — verify by reinstall
     }
+    if (stamp === requirementsHash()) {
+      return venvPy; // venv exists and was installed from this exact requirements.txt
+    }
+    console.error("LivePilot: requirements changed — updating Python dependencies...");
+    pipInstall(venvPy);
+    writeVenvStamp();
+    return venvPy;
   }
 
   // Create venv from scratch
@@ -171,6 +198,7 @@ function ensureVenv(systemPython, prefixArgs) {
 
   console.error("LivePilot: installing dependencies...");
   pipInstall(venvPython());
+  writeVenvStamp();
 
   return venvPython();
 }

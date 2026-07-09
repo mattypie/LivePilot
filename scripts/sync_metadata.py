@@ -468,14 +468,52 @@ DOMAIN_LIST_FILES = [
 ]
 
 
+def _walk_json_version_fields(node, path=""):
+    """Yield (json_path, value) for every key literally named 'version'.
+
+    Structural check for JSON manifests: substring containment cannot see a
+    STALE nested field when the correct version appears elsewhere in the same
+    file — exactly how server.json shipped v1.27.2 at the top level while
+    packages[0].version sat at 1.27.1 (caught in the 2026-07-09 review).
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            child = f"{path}.{key}" if path else key
+            if key == "version" and isinstance(value, str):
+                yield child, value
+            else:
+                yield from _walk_json_version_fields(value, child)
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            yield from _walk_json_version_fields(item, f"{path}[{i}]")
+
+
 def check_version(version: str) -> list[str]:
-    """Check all version files for staleness."""
+    """Check all version files for staleness.
+
+    JSON files are validated field-by-field (every nested 'version' key must
+    match); everything else falls back to the substring check.
+    """
     issues = []
     for rel_path in VERSION_FILES:
         path = ROOT / rel_path
         if not path.exists():
             continue
         content = path.read_text(encoding="utf-8")
+        if rel_path.endswith(".json"):
+            try:
+                fields = list(_walk_json_version_fields(json.loads(content)))
+            except json.JSONDecodeError:
+                issues.append(f"  {rel_path}: not valid JSON")
+                continue
+            for json_path, value in fields:
+                # Only semver-shaped fields are ours to police — manifests may
+                # carry unrelated version keys (schema/protocol versions).
+                if re.fullmatch(r"1\.\d+\.\d+", value) and value != version:
+                    issues.append(
+                        f"  {rel_path}: {json_path} has {value}, expected {version}"
+                    )
+            continue
         if version not in content:
             # Find what version IS there
             old = re.search(r"1\.\d+\.\d+", content)
