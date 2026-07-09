@@ -133,16 +133,16 @@ def _surface_enriched_fields(device: dict) -> dict:
 def atlas_search(ctx: Context, query: str, category: str = "all", limit: int = 10) -> dict:
     """Search the device atlas for instruments, effects, kits, or plugins.
 
-    Searches BOTH:
-      1. The bundled factory atlas (5,264 devices across 33 packs)
-      2. The user-local overlay corpus (~/.livepilot/atlas-overlays/) — including
-         user-scanned Max devices, racks, plugin presets, and AI-synthesized
-         plugin identity yamls. This is the wiring that lets LivePilot reason
-         over the user's PERSONAL library, not just Ableton's defaults.
+    Searches BOTH the bundled factory atlas (5,264 devices/33 packs) AND
+    the user-local overlay corpus (~/.livepilot/atlas-overlays/ — user-
+    scanned Max devices, racks, plugin presets, AI-synthesized plugin
+    identity yamls), so results cover the user's PERSONAL library too,
+    not just Ableton's defaults. Budget-split details: livepilot-core
+    references/atlas-tool-notes.md#atlas_search--overlay-budget-split.
 
-    query:    natural language search — name, sonic character, use case, or genre
-              Examples: "warm analog bass", "reverb", "808 kit", "granular",
-                        "my arpeggiator", "the polyrhythmic sequencer in my user library"
+    query:    natural language search — name, sonic character, use case,
+              or genre. Examples: "warm analog bass", "granular",
+              "my arpeggiator in user library".
     category: filter by category (all, instruments, audio_effects, midi_effects,
               max_for_live, drum_kits, plugins). For user-corpus content, pass
               "all" — overlay entity_types are surfaced regardless of category.
@@ -447,33 +447,25 @@ def atlas_describe_chain(
     genre: str = "",
     limit_per_role: int = 3,
 ) -> dict:
-    """Free-text describe-a-chain: "a granular pad that sounds like Tim Hecker"
-    → device chain proposal.
+    """Free-text describe-a-chain: a sentence like "a warm analog bass for
+    deep dubby techno" → device chain proposal.
 
     The mirror of `splice_describe_sound` for the device library. Where
-    `atlas_chain_suggest(role, genre)` takes structured inputs, this takes
-    a free-form sentence and proposes a chain by:
+    `atlas_chain_suggest(role, genre)` takes structured inputs, this
+    detects role + aesthetic cues from free text, searches the atlas,
+    and proposes top devices per role. Internals: livepilot-core
+    references/atlas-tool-notes.md#atlas_describe_chain--internals.
 
-      1. Parsing role hints from the description ("bass", "pad", "lead",
-         "percussion", "drum", "texture", "vocal", "keys")
-      2. Parsing aesthetic hints (artist names → `artist-vocabularies.md`,
-         genre names → `genre-vocabularies.md`, character words → atlas tags)
-      3. Searching the atlas with those terms
-      4. Proposing the top devices per role with brief rationale
+    This does NOT autoload anything — it returns a proposal the caller
+    reviews/adjusts, then executes with `load_browser_item` + FX.
 
-    This does NOT autoload anything — it returns a proposal the caller can
-    review, adjust, then execute with `load_browser_item` + a chain of FX.
-
-    description: free text. Examples:
-        "a granular pad that sounds like Tim Hecker"
-        "warm analog bass for minimal techno, deep and dubby"
-        "chopped vocal melody, Akufen-style microhouse"
-        "brittle mallet percussion with long reverb, Stars of the Lid territory"
+    description: free text mixing role + aesthetic cues, e.g. "a granular
+        pad, dark and dubby" or "chopped vocal melody, microhouse".
     genre:       optional genre bias if the description is genre-agnostic
     limit_per_role: max devices to suggest per detected role (default 3)
 
     Returns {description, detected_roles, detected_aesthetic,
-             per_role_suggestions: [...], chain_proposal: [...]}.
+             per_role_suggestions: [...], chain_proposal: [...], next_steps}.
     """
     atlas = _get_atlas()
     if atlas is None:
@@ -674,29 +666,22 @@ def atlas_describe_chain(
 def atlas_techniques_for_device(ctx: Context, device_id: str) -> dict:
     """Reverse-lookup: what techniques / principles reference this device?
 
-    Answers questions like "what can I do with Granulator III?" by returning
-    every technique across the knowledge base that mentions this device —
-    the device's own `signature_techniques`, sample-manipulation principles
-    that use it, sound-design-deep.md references. Complements
-    `atlas_device_info` (which returns the device's own curated fields) by
-    showing the device's OUTWARD connections — how it fits into techniques
-    that weren't written from the device's perspective.
+    Answers "what can I do with this device?" by returning every
+    technique across the knowledge base that mentions it. Complements
+    `atlas_device_info` (the device's own curated fields) by showing its
+    OUTWARD connections. Index details: livepilot-core references/
+    atlas-tool-notes.md#atlas_techniques_for_device--index.
 
     device_id: atlas ID (e.g. "granulator_iii", "simpler", "analog"). Use
                `atlas_search` or `atlas_device_info` to discover IDs.
 
     Returns {device_id, technique_count, techniques: [...]}, where each
     technique entry has:
-      - technique: short name (e.g. "Vocal micro-chop (Akufen)")
-      - description: one-line
+      - technique: short name, description: one-line
       - aesthetic: list of aesthetic/genre tags
-      - source: where this technique lives (`atlas/<id>`,
-                `sample-techniques.md`, `sound-design-deep.md`)
+      - source: originating doc (`atlas/<id>`, `sample-techniques.md`,
+                `sound-design-deep.md`)
       - kind: signature_technique | sample_technique | sound_design_principle
-
-    Index is auto-generated from the knowledge base; regenerate via the
-    companion script when adding new techniques (rare — most additions
-    happen through enrichment YAMLs, which the index reads directly).
     """
     import json, os
     index_path = os.path.join(
@@ -780,24 +765,22 @@ def scan_full_library(
 
     Walks every category (instruments, audio_effects, midi_effects, max_for_live,
     drums, plugins, packs) and records every loadable item with its URI.
-    Results are merged with curated enrichments and saved to device_atlas.json.
+    Results are merged with curated enrichments and saved to the user
+    atlas path (~/.livepilot/atlas/device_atlas.json — never the bundled
+    baseline).
 
-    force: if True, rescan even if atlas already exists (default False)
-    max_per_category: ceiling per category (default 25000, matching the
-        remote script's own default — DEEP_REVIEW P1-11). The original
-        hardcoded 1000 cap silently truncated large categories in
-        browser-tree (alphabetical) order — e.g. drum_kits stopped at
-        "Crash" (0 kicks, 2 hats), and the samples category alone has
-        ~22,000 items per the browser tree, so a "1000 samples" count was
-        wrong by a factor of 22 (BUG-2026-04-22 #12). Raise this further
-        if your library is even bigger; lower it for fast smoke scans.
+    force: if True, rescan even if a recent (<24h) atlas already exists
+        (default False)
+    max_per_category: ceiling per category (default 25000). Raise this
+        further for very large libraries; lower it for fast smoke scans.
+        Cap-sizing history: livepilot-core references/
+        atlas-tool-notes.md#scan_full_library--scan-cap-history.
 
     Returns a stats dict including `truncated_categories` listing any
     category that hit the cap (so callers know the count is a lower
-    bound rather than the true total). The same information is folded
-    into `stats.category_truncated` (keyed by atlas device-category, e.g.
-    "drum_kits"/"sounds"/"samples") and persisted into device_atlas.json
-    so AtlasManager can warn future atlas_search/atlas_suggest calls that
+    bound rather than the true total), also folded into
+    `stats.category_truncated` and persisted into device_atlas.json so
+    AtlasManager can warn future atlas_search/atlas_suggest calls that
     touch a truncated category without requiring a fresh scan first.
     """
     from .scanner import normalize_scan_results, _CATEGORY_MAP

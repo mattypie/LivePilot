@@ -229,50 +229,28 @@ async def get_master_spectrum(
     samples: int = 0,
     sub_detail: bool = False,
 ) -> dict:
-    """Get 9-band frequency analysis of the master bus.
+    """Get 9-band frequency analysis of the master bus. Values 0.0-1.0.
 
-    Returns band energies (fffb~ center frequencies shown in parens):
-      sub_low   20-60 Hz   (~35 Hz center)  — kick fundamentals, Villalobos subs
-      sub       60-120 Hz  (~85 Hz)         — 808s, sub-bass body
-      low       120-250 Hz (~175 Hz)        — bass body, warmth
-      low_mid   250-500 Hz (~350 Hz)        — mud zone, male vocal lows
-      mid       500-1 kHz  (~700 Hz)        — vocal presence, snare body
-      high_mid  1-2 kHz    (~1.4 kHz)       — consonants, pick attack
-      high      2-4 kHz    (~2.8 kHz)       — presence, vocal intelligibility
-      presence  4-8 kHz    (~5.6 kHz)       — cymbal definition, air of breath
-      air       8-20 kHz   (~12 kHz)        — shimmer, sparkle
-    Values 0.0-1.0.
-
-    Older .amxd builds (pre-v1.16) emit the legacy 8-band layout without the
-    explicit `sub_low` split — the server auto-detects band count from the OSC
-    payload and picks the right name set. Re-freeze the Max device to get the
-    9-band resolution.
+    Bands (low->high): sub_low (20-60Hz), sub (60-120Hz), low (120-250Hz),
+    low_mid (250-500Hz), mid (500Hz-1kHz), high_mid (1-2kHz), high (2-4kHz),
+    presence (4-8kHz), air (8-20kHz). Full Hz-range/use-case table:
+    livepilot-core references/perception.md#get_master_spectrum-9-band-table.
+    Legacy pre-v1.16 .amxd builds emit 8 bands (no sub_low split) —
+    auto-detected from the OSC payload.
 
     Also returns detected key/scale if enough audio has been analyzed.
     Requires LivePilot Analyzer on master track.
 
-    BUG-2026-04-22#6 fix — windowed averaging:
-      Kick transients make single snapshots swing wildly (0.45 → 0.05 →
-      0.16 within a bar). When mixing, you want a STABLE band profile,
-      not an instantaneous frame. Pass `window_ms` to sample the cache
-      over a time window and mean-pool:
-        - window_ms=500 → sample over 500ms (common for mix reads)
-        - window_ms=2000 → sample over 2 seconds (long-tail stability)
-      When `window_ms=0` (default), returns a single instantaneous snapshot
-      — the legacy behavior. `samples` overrides the auto-computed sample
-      count (defaults to window_ms / 50, minimum 3).
+    window_ms (default 0): 0 returns a single instantaneous snapshot.
+    >0 (max 10000) mean-pools `samples` readings (default window_ms/50,
+    min 3, max 100) over that window instead — use for a stable mix read
+    since single frames swing wildly on transients. Also returns
+    bands_min/bands_max/bands_std for variance across the window.
 
-    The sampled bands are also returned as `bands_min`, `bands_max` and
-    `bands_std` so callers can see variance within the window — useful
-    for detecting transient-heavy content vs. sustained material.
-
-    BUG-2026-04-22#15 fix — sub-band resolution:
-      Pass `sub_detail=True` to attach a `sub_detail` dict with three
-      finer buckets: `sub_deep` (20-45 Hz), `sub_mid` (45-60 Hz),
-      `sub_high` (60-80 Hz). Derived from the FluCoMa mel spectrum
-      (40 bands) rather than the 9-band cache, so it requires FluCoMa
-      to be active. When FluCoMa is unavailable, sub_detail is omitted
-      with a `sub_detail_warning` field explaining why.
+    sub_detail=True: attaches sub_detail {sub_deep 20-45Hz, sub_mid
+    45-60Hz, sub_high 60-80Hz} derived from the FluCoMa 40-band mel
+    spectrum (requires FluCoMa active; omitted with sub_detail_warning
+    otherwise).
     """
     cache = _get_spectral(ctx)
     _require_analyzer(cache)
@@ -594,25 +572,22 @@ async def replace_simpler_sample(
     """Load an audio file into a Simpler device by absolute file path.
 
     Replaces the currently loaded sample. The Simpler must already have
-    a sample loaded — this replaces it, it cannot load into an empty Simpler.
-    If the Simpler is empty (freshly created with no sample), load a sample
-    manually first or use find_and_load_device to load a preset that already
-    contains a sample.
+    a sample loaded — this cannot load into an empty Simpler. If empty,
+    load a sample manually first or use find_and_load_device to load a
+    preset that already contains a sample.
 
-    **Prefer `load_browser_item(track, uri)` when possible** — see P0-1 in
-    docs/2026-04-14-bugs-discovered.md. The M4L bridge's replace path can
-    silently keep the bootstrap placeholder in some conditions; this tool
-    now verifies by reading back the device name and will return an error
-    if the replace didn't actually take effect.
+    **Prefer `load_browser_item(track, uri)` when the file is browser-
+    indexed** — more reliable (see livepilot-core references/
+    perception.md#replace_simpler_sample--load_sample_to_simpler). This
+    tool verifies by reading back the device name post-load and returns
+    an error if the replace didn't actually take effect.
 
-    Nested addressing (Live 12.4+ only, BUG-#1 fix from 2026-04-22):
-      - When `chain_index` is provided, the device is resolved at
-        `track.devices[device_index].chains[chain_index]
-         .devices[nested_device_index or 0]`. This is how Drum Rack
-        pad-by-pad construction works — see `add_drum_rack_pad` for the
-        high-level workflow.
-      - chain_index is only honored by the native 12.4 path; the M4L
-        bridge fallback cannot resolve nested paths.
+    Nested addressing (Live 12.4+ only): when `chain_index` is provided,
+    the device is resolved at `track.devices[device_index]
+    .chains[chain_index].devices[nested_device_index or 0]` — how Drum
+    Rack pad-by-pad construction works (see `add_drum_rack_pad` for the
+    high-level workflow). Only the native 12.4 path honors chain_index;
+    the M4L bridge fallback cannot resolve nested paths.
 
     Also auto-applies post-load hygiene:
       - Sets Simpler Snap=0 (required for playback after replace)
@@ -696,20 +671,20 @@ async def load_sample_to_simpler(
 ) -> dict:
     """Load an audio file into a NEW Simpler device on a track.
 
-    This is the full workflow for programmatic sample loading:
-    1. Loads a dummy sample via the browser (creates Simpler with a sample)
-    2. Replaces the dummy with your audio file
-    3. Applies post-load hygiene (Snap=0, loop defaults for warped loops)
-    4. Verifies by reading back the device name — returns an error if
-       the Simpler still has the bootstrap placeholder (P0-1 guard)
+    Creates a Simpler (native insert+replace on Live 12.4+; a
+    bootstrap-sample-then-replace workaround on earlier versions),
+    applies post-load hygiene (Snap=0, loop defaults for warped loops),
+    then verifies by reading back the device name — errors if the
+    Simpler still has the bootstrap placeholder. Full rationale:
+    livepilot-core references/perception.md
+    #replace_simpler_sample--load_sample_to_simpler.
 
-    Use this instead of replace_simpler_sample when the track has no Simpler
-    or the Simpler is empty. Works with any audio file path.
+    Use this instead of replace_simpler_sample when the track has no
+    Simpler or the Simpler is empty. Works with any audio file path.
 
-    **For files that exist in Ableton's browser index** (Samples, User Library,
-    Packs), PREFER `load_browser_item(track, uri)` — it goes through Ableton's
-    native loading path and is more reliable. This tool is a workaround for
-    files that aren't browser-indexed.
+    **For files that exist in Ableton's browser index** (Samples, User
+    Library, Packs), PREFER `load_browser_item(track, uri)` — more
+    reliable. This tool is a workaround for non-browser-indexed files.
 
     Requires LivePilot Analyzer on master track.
     """
@@ -830,26 +805,19 @@ async def add_drum_rack_pad(
     rack_device_index: Optional[int] = None,
     chain_name: Optional[str] = None,
 ) -> dict:
-    """Add a new pad (chain) to a Drum Rack and load a sample into it.
+    """Add a new pad (chain) to a Drum Rack and load a sample into it — atomic.
 
-    **BUG-2026-04-22#1 FIX** — this is the tool that was missing.
-    Previously `load_browser_item` replaced the existing chain on repeat
-    calls, and `load_sample_to_simpler` couldn't address nested paths.
-    This single tool does the full drum-rack pad build atomically:
+    One call does the full build: locate/auto-detect the Drum Rack
+    (auto-detect searches for class_name containing "DrumGroupDevice"),
+    insert a new chain, assign the trigger note, insert an empty Simpler
+    into that chain, native-replace the sample with nested addressing,
+    Snap=0 post-load. Full history: livepilot-core references/
+    perception.md#add_drum_rack_pad.
 
-      1. Locates the Drum Rack on the track (auto-finds if
-         `rack_device_index` is None — searches for class_name containing
-         "DrumGroupDevice").
-      2. Inserts a new chain on the rack (`insert_rack_chain`).
-      3. Assigns the chain's trigger note (`set_drum_chain_note`).
-      4. Inserts an empty Simpler into the chain (`insert_device` with
-         `chain_index`).
-      5. Calls the native Live 12.4 `replace_sample_native` with nested
-         addressing to load the sample.
-      6. Sets Snap=0 post-load (playback hygiene).
-
-    Requires Live 12.4+ for step 5. On earlier versions returns an error
-    directing the caller to the bridge-based workaround.
+    Requires Live 12.4+ for the nested-addressing sample load. On
+    earlier versions returns an error directing to the bridge-based
+    workaround (call insert_rack_chain / set_drum_chain_note /
+    insert_device / replace_simpler_sample individually).
 
     track_index:       track containing the Drum Rack
     pad_note:          MIDI note for the pad (0..127). Standard drum map:
@@ -859,16 +827,9 @@ async def add_drum_rack_pad(
                        If None, auto-detects the first Drum Rack.
     chain_name:        optional display name for the new chain.
 
-    Returns: {
-      "ok": bool,
-      "track_index": int,
-      "rack_device_index": int,
-      "chain_index": int,
-      "pad_note": int,
-      "nested_device_index": int,   # where the Simpler landed
-      "device_name": str,
-      "method": "native_12_4",
-    }
+    Returns {ok, track_index, rack_device_index, chain_index, pad_note,
+    nested_device_index (where the Simpler landed), device_name,
+    method:"native_12_4"}.
     """
     # _simpler_post_load_hygiene is already imported at module scope
     # (line 29). Do not re-import inline — the earlier inline form used
@@ -1064,21 +1025,20 @@ async def classify_simpler_slices(
     break.** Slice content depends on transient detection order in the
     source audio — slice 0 is NOT guaranteed to be a kick. Assuming
     drum-rack convention produces wrong grooves that take iterations to
-    diagnose (see 2026-04-18 creative session for the canonical case).
+    diagnose.
 
-    Classification rules (validated on "Break Ghosts 90 bpm"):
-      - KICK: sub+low >= 45%, high < 40%
-      - HAT: high >= 70% AND mid < 25% (thin metal disc = no drum body)
-      - SNARE: mid >= 25% AND high >= 40% AND peak >= 0.6 (broadband loud)
-      - ghost: peak < 0.35
+    Classification thresholds: livepilot-core references/
+    perception.md#classify_simpler_slices--classification-thresholds
+    (KICK: sub+low >= 45%, high < 40%. HAT: high >= 70% AND mid < 25%.
+    SNARE: mid >= 25% AND high >= 40% AND peak >= 0.6. ghost: peak < 0.35).
 
     Parameters:
       track_index, device_index: the Simpler to analyze
-      file_path: (optional) explicit WAV path. If omitted, the bridge
-        resolves it automatically via ``get_simpler_file_path``
-        (v1.23.3+). Pass explicitly only when running against an .amxd
-        freeze that predates the case (returns the bridge error string
-        in that case so the caller knows to re-freeze).
+      file_path: (optional) explicit WAV path. If omitted, resolved
+        automatically via Remote Script then M4L bridge fallback. Pass
+        explicitly only against a stale .amxd freeze that predates
+        auto-resolution (returns the bridge error string so the caller
+        knows to re-freeze).
 
     Returns: dict with ``slices`` list. Each slice entry has:
       index, frame, seconds, midi_pitch (36+index), label, peak, rms,
@@ -1581,17 +1541,13 @@ async def verify_device_health(
 ) -> dict:
     """Fire a test MIDI note at a track's instrument and check for output.
 
-    BUG-2026-04-22#19 fix — parameter_count alone can't tell you whether
-    an AU/VST is alive. Plenty of "loaded" plugins return 19 params and
-    silence. This tool does the real-world check:
-
-      1. Snapshot the track meter.
-      2. Emit a MIDI note at the specified pitch/velocity.
-      3. Sample the track meter for `test_duration_ms` (peak across samples).
-      4. Compare the peak to a threshold; report alive vs dead.
-
-    The meter readout is taken with `get_track_meters(samples=N)` so the
-    BUG-#7 "left=right=0 while level>0" artifact can't cause false negatives.
+    parameter_count alone can't tell you whether an AU/VST is alive —
+    plenty of "loaded" plugins return N params and silence. Real-world
+    check: snapshot the track meter, emit a MIDI note at the specified
+    pitch/velocity, sample the meter for `test_duration_ms` (peak across
+    samples, dodging a left=right=0-while-level>0 meter artifact), and
+    compare the peak to `threshold`. Common dead-device causes and
+    history: livepilot-core references/perception.md#verify_device_health--verify_all_devices_health.
 
     track_index:      track with the instrument to verify
     test_midi_note:   pitch to fire (default C3 / 60 — safe for most samples)
@@ -1600,14 +1556,8 @@ async def verify_device_health(
     threshold:        peak level below which the device is considered dead
                       (default 0.005 — roughly -46 dBFS)
 
-    Returns: {
-      "ok": bool,
-      "alive": bool,
-      "peak_level": float,
-      "threshold": float,
-      "samples_taken": int,
-      "hint": str,     # actionable advice when dead
-    }
+    Returns {ok, alive, peak_level, threshold, samples_taken, hint
+    (actionable advice when dead)}.
 
     Requires LivePilot Analyzer on master track and a playable instrument
     on the target track. Prefer this over trying to eyeball parameter_count.
@@ -1855,13 +1805,11 @@ async def analyze_loudness_live(
 ) -> dict:
     """Analyze the currently-playing master output's loudness over a window (LIVE).
 
-    Use this tool during a session — no rendered file needed.
-    For offline analysis of an exported audio file use analyze_loudness() instead.
-
-    BUG-2026-04-22#8 fix — the offline `analyze_loudness` requires a
-    rendered file. This tool samples the LivePilot analyzer's realtime
-    momentary LUFS / true peak stream over `window_sec` and reports
-    integrated + max statistics. No render required.
+    Use this tool during a session — no rendered file needed. For
+    offline analysis of an exported audio file use analyze_loudness()
+    instead. Samples the LivePilot analyzer's realtime momentary LUFS /
+    true peak stream over `window_sec` and reports integrated + max
+    statistics.
 
     Requires FluCoMa package in Max and playback to be running. Best
     called while the section you want to measure is actually playing.

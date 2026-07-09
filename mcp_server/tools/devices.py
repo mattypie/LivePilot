@@ -253,40 +253,32 @@ def set_device_parameter(
 
     track_index: 0+ for regular tracks, -1/-2/... for return tracks (A/B/...), -1000 for master.
 
-    ⚠️ PARAMETER RANGES ARE NOT ALWAYS 0-1 (BUG-B4 / B9 / 2026-04-26#2):
-      Ableton devices use MIXED units depending on the parameter. Always
-      read the `value_string` in the response (and the `min`/`max` from
-      get_device_parameters) before assuming 0-1 semantics:
+    ⚠️ PARAMETER RANGES ARE NOT ALWAYS 0-1. Ableton devices use MIXED
+    units depending on the parameter. Always read `value_string` in the
+    response (or min/max from get_device_parameters) before assuming
+    0-1 semantics — it's the SOURCE OF TRUTH for what the user sees.
+    Full per-device table: livepilot-devices references/
+    device-parameter-units.md. Quick hits:
 
-        - Auto Filter `Frequency`:        20-135 index (NOT normalized)
-        - Auto Filter Legacy `LFO Amount`: 0-30 absolute (displays as %)
-        - Auto Filter `Resonance`:        0-1.25 on legacy, 0-1 on AutoFilter2
-        - Auto Filter `Env. Modulation`:  -127..+127 on legacy
-        - Compressor I (legacy):          pre-2010 units (Threshold dB direct)
-        - **Compressor 2 (modern, default)**: 0-1 NORMALIZED.
+        - **Compressor 2** (modern, default): 0-1 NORMALIZED.
           `Threshold 0.85 ≈ 0 dB`, `Ratio 0.75 = 4:1`, `Release 0.16 = 30 ms`.
-          Setting Threshold to a dB value like -22 will fail. Compute
-          normalized: `(dB + 50) / 50` for typical dB→0-1 mapping, OR
-          read the param's value_string after a probe write.
+          A dB value like -22 will fail here. Compressor I (legacy):
+          pre-2010 units, dB direct.
         - **Saturator** `Drive`, `Output`, `Threshold`, `Color *`: 0-1
           NORMALIZED (Drive 0.5 ≈ 0 dB, Drive 0.6 ≈ +7 dB).
-        - Dynamic Tube, Vocoder:          pre-2010 units
-        - EQ Three `Frequency Hi/Lo`:     50Hz-15kHz absolute
-        - Wavetable `Osc 1 Pos`:          0-1 normalized ✓
-        - Drift / Analog / Operator macros: 0-1 normalized ✓
-        - Pedal `Output`:                 -20..+20 dB direct
-        - Pedal `Bass / Mid / Treble`:    -1..+1 direct
+        - Auto Filter `Frequency`: 20-135 index (NOT normalized).
+        - EQ Three `Frequency Hi/Lo`: 50Hz-15kHz absolute.
+        - Wavetable / Drift / Analog / Operator macros: 0-1 normalized ✓.
+        - Pedal `Output`: -20..+20 dB direct; `Bass/Mid/Treble`: -1..+1.
 
-      The `value_string` field in the response is the SOURCE OF TRUTH
-      for what the user sees. Automation recipes that assume 0-1 will
-      clamp on legacy devices. When in doubt, call
-      get_device_parameters first to inspect min/max/is_quantized.
+      When in doubt, call get_device_parameters first to inspect
+      min/max/is_quantized.
 
-    Error enrichment (BUG-2026-04-26#2): if the Remote Script rejects
-    the value as out-of-range, this wrapper fetches the parameter's
-    actual min/max/value_string and re-raises with that context inline.
-    Saves a follow-up get_device_parameters round-trip in the agent
-    loop after every miss.
+    On out-of-range rejection, the error is enriched with the actual
+    min/max/value_string for that parameter — no follow-up
+    get_device_parameters round-trip needed. Response includes
+    `snapped: bool` when Ableton silently quantized the value to the
+    nearest step (quantized-enum params).
     """
     _validate_track_index(track_index)
     _validate_device_index(device_index)
@@ -517,13 +509,11 @@ def batch_set_parameters(
 
     track_index: 0+ for regular tracks, -1/-2/... for return tracks (A/B/...), -1000 for master.
 
-    Response (v1.20.2+): the dict now includes a ``snapped_params`` list
-    when quantized-enum parameters were silently snapped by Ableton
-    (requested 0.3, received 0). Empty list means every requested value
-    round-tripped within 1e-5 tolerance. Callers using this tool to
-    drive deterministic state should inspect ``snapped_params`` before
-    assuming success — see BUG #4 in the v1.20 live-test campaign for
-    the motivating case (Beat Repeat Gate).
+    Response includes a ``snapped_params`` list when quantized-enum
+    parameters were silently snapped by Ableton (requested 0.3, received
+    0; e.g. Beat Repeat's Gate). Empty list means every requested value
+    round-tripped within 1e-5 tolerance. Callers driving deterministic
+    state should inspect ``snapped_params`` before assuming success.
     """
     _validate_track_index(track_index)
     _validate_device_index(device_index)
@@ -664,12 +654,11 @@ def insert_device(
     device_index: required when inserting into a rack chain (identifies the rack)
     chain_index:  insert into this chain of a rack device (for building drum kits)
 
-    Drum Rack construction workflow (12.3+):
-    1. insert_device(track_index, 'Drum Rack')       — create empty rack
-    2. insert_rack_chain(track_index, device_index)   — add chains
-    3. set_drum_chain_note(chain_index, note=36)      — assign C1 (kick)
-    4. insert_device(track_index, 'Simpler',          — add instrument
-       device_index=rack_idx, chain_index=0)            into chain
+    Drum Rack construction workflow (12.3+, full detail: livepilot-devices
+    references/device-parameter-units.md#drum-rack-construction-workflow-123):
+    insert_device(track, 'Drum Rack') to create the rack, then
+    insert_rack_chain + set_drum_chain_note + insert_device(..., chain_index=0)
+    to add each pad's instrument.
 
     On Live < 12.3: returns an error suggesting find_and_load_device instead.
     """
@@ -704,11 +693,8 @@ def insert_rack_chain(
 ) -> dict:
     """Insert a new chain into a Rack device — Instrument Rack, Audio Effect Rack, or Drum Rack (Live 12.3+).
 
-    Use with insert_device + set_drum_chain_note to build Drum Racks from scratch:
-    1. insert_device(track, 'Drum Rack') to create the rack
-    2. insert_rack_chain(track, rack_device_index) to add chains
-    3. set_drum_chain_note(chain_index=0, note=36) to assign C1 (kick)
-    4. insert_device(track, 'Simpler', device_index=rack, chain_index=0) into chain
+    Use with insert_device + set_drum_chain_note to build Drum Racks from
+    scratch — see insert_device's docstring for the full 4-step workflow.
 
     track_index:  track containing the rack
     device_index: rack device index on the track

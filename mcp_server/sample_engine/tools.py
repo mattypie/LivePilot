@@ -222,15 +222,13 @@ async def search_samples(
 ) -> dict:
     """Search for samples across Splice library, Ableton browser, and local filesystem.
 
-    Searches all enabled sources in parallel and ranks results.
-    Splice results include rich metadata (key, BPM, genre, tags, pack info,
-    is_premium, price, is_free, preview_url).
+    Searches all enabled sources in parallel, ranked Splice-first, then
+    browser, then filesystem. Splice results carry key/BPM/genre/tags/
+    pack/is_premium/price/is_free/preview_url metadata.
 
-    When the Splice desktop app is running AND grpcio is installed, this
-    searches Splice's ONLINE catalog (19,690+ hits for a generic query)
-    and returns un-downloaded items alongside local files. When gRPC is
-    unavailable, it falls back to the local SQLite index and only returns
-    already-downloaded samples.
+    With the Splice desktop app running + grpcio installed: searches
+    Splice's ONLINE catalog, returning un-downloaded items too. Without
+    gRPC: falls back to the local SQLite index (downloaded samples only).
 
     query: search text like "dark vocal", "breakbeat", "foley metal"
     q: alias for `query` (accepts either name for ergonomics)
@@ -776,24 +774,12 @@ async def get_splice_credits(ctx: Context) -> dict:
     Returns both pockets of the Splice subscription model:
       - `credits_remaining`: Splice.com credits for presets/MIDI/Instrument
       - `daily_quota`: sample-download counter (Ableton Live plan only)
+      - `download_gating`: "daily_quota" (Ableton Live plan) or
+        "credit_floor" (Sounds+/Creator/Creator+ — protects the last
+        CREDIT_HARD_FLOOR credits)
 
-    Example (Ableton Live plan):
-      {
-        "connected": true,
-        "username": "user-1367453956",
-        "plan_raw": "subscribed",
-        "plan_kind": "ableton_live",
-        "sounds_plan_id": 12,
-        "features": {"ableton_unmetered": true, ...},
-        "credits_remaining": 80,
-        "credit_floor": 5,
-        "daily_quota": {
-            "used_today": 3, "remaining_today": 97, "daily_limit": 100,
-            "near_limit": false, "at_limit": false,
-        },
-        "can_download_sample": true,
-        "download_gating": "daily_quota",  # or "credit_floor"
-      }
+    Full example response: livepilot-sample-engine references/
+    splice-tools-notes.md#get_splice_credits--full-response-example-ableton-live-plan.
 
     Returns connected=False (with zero credits) when the Splice desktop app
     isn't running or grpcio isn't installed.
@@ -1538,12 +1524,9 @@ async def splice_describe_sound(
     """Natural-language sample search — the Sounds Plugin's "Describe a Sound".
 
     Splice's AI matches free-form descriptions like "dark ambient pad with
-    shimmer" or "tight 90s house hi-hat" to catalog samples. Hits the
-    GraphQL `SamplesSearch` operation on `surfaces-graphql.splice.com`
-    with `semantic=1` + `rephrase=true` enabled.
-
-    **Status: LIVE** as of 2026-04-22. Endpoint captured via mitmproxy
-    against Splice desktop 5.4.9 + Sounds Plugin.
+    shimmer" or "tight 90s house hi-hat" to catalog samples. Endpoint
+    history: livepilot-sample-engine references/splice-tools-notes.md
+    #splice_describe_sound--splice_generate_variation--endpoint-history.
 
     description: free-text prompt ("warm analog bass under 80bpm")
     bpm:         optional BPM filter
@@ -1590,13 +1573,11 @@ async def splice_generate_variation(
     """Find catalog samples similar to a given Splice sample — the "Variations" feature.
 
     Splice's right-click "Variations" menu item surfaces other catalog
-    samples with similar sonic character. The GraphQL operation name
-    is `AssetSimilarSoundsQuery`. Up to 10 results per call. No credit
-    cost (this is a recommender lookup, not AI audio synthesis — the
-    original naming in the handoff was aspirational).
-
-    **Status: LIVE** as of 2026-04-22. Endpoint captured via mitmproxy
-    against Splice desktop v5.4.9.
+    samples with similar sonic character. Up to 10 results per call. No
+    credit cost — a recommender lookup, not AI audio synthesis (the
+    "generate" naming was aspirational). Endpoint history: livepilot-
+    sample-engine references/splice-tools-notes.md
+    #splice_describe_sound--splice_generate_variation--endpoint-history.
 
     uuid:       source sample's catalog uuid (from `splice_describe_sound`
                 results or any other Splice metadata call)
