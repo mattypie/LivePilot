@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,15 @@ from typing import Optional
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Prefer the libyaml-backed CSafeLoader (~8.5x faster than the pure-Python
+# SafeLoader) when the yaml package was built with libyaml support. Fall
+# back to SafeLoader if CSafeLoader isn't available (e.g. libyaml missing
+# from the environment) so overlay loading never hard-fails on this.
+try:
+    _YAML_LOADER = yaml.CSafeLoader
+except AttributeError:
+    _YAML_LOADER = yaml.SafeLoader
 
 
 # ─── Tokenizer (used by OverlayIndex.search) ─────────────────────────────────
@@ -318,7 +328,14 @@ def load_overlays(root: Optional[Path] = None,
     if root is None:
         root = _resolve_overlay_root()
 
-    idx = get_overlay_index()
+    # Mark loaded up front (not just on success) so a call to load_overlays()
+    # — with either the default or an explicit root — always short-circuits
+    # the lazy _ensure_loaded() path on subsequent get_overlay_index() calls,
+    # including the "root doesn't exist" early-return below.
+    global _overlay_loaded
+    _overlay_loaded = True
+
+    idx = _overlay_index
     idx.clear()
 
     if not root.exists():
@@ -337,7 +354,7 @@ def load_overlays(root: Optional[Path] = None,
                 continue
             try:
                 with yaml_path.open("r") as f:
-                    parsed = yaml.safe_load(f)
+                    parsed = yaml.load(f, Loader=_YAML_LOADER)
             except yaml.YAMLError as e:
                 log.warning(f"overlays: skipped {yaml_path}: {e}")
                 continue
@@ -367,8 +384,34 @@ def load_overlays(root: Optional[Path] = None,
 # request time so they always see current state (never capture a reference).
 _overlay_index: "OverlayIndex" = OverlayIndex()
 
+# Lazy-population state (v1.27.3 perf batch). The singleton used to be
+# populated unconditionally at server import time (server.py boot hook),
+# which cost ~1.1s of a ~2s import on a machine with a populated
+# ~/.livepilot/atlas-overlays tree. Now the first call to
+# get_overlay_index() populates it under a lock; subsequent calls are a
+# cheap flag check. Explicit load_overlays() calls (tests, reload tools)
+# always force a fresh scan and mark the singleton as loaded.
+_overlay_loaded = False
+_overlay_load_lock = threading.Lock()
+
+
+def _ensure_loaded() -> None:
+    """Populate the singleton on first access only. Double-checked locking
+    avoids taking the lock on the (overwhelmingly common) already-loaded path."""
+    global _overlay_loaded
+    if _overlay_loaded:
+        return
+    with _overlay_load_lock:
+        if _overlay_loaded:
+            return
+        load_overlays()
+        _overlay_loaded = True
+
 
 def get_overlay_index() -> "OverlayIndex":
     """Accessor for the live overlay singleton. Always returns the same
-    instance — load_overlays() mutates it in place rather than replacing."""
+    instance — load_overlays() mutates it in place rather than replacing.
+
+    Triggers lazy population on first call (see _ensure_loaded)."""
+    _ensure_loaded()
     return _overlay_index

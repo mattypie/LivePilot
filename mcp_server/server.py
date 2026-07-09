@@ -533,32 +533,22 @@ _patch_tool_schemas()
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# v1.23.0: User-local atlas overlay boot hook.
+# v1.23.0: User-local atlas overlay loading.
 #
-# Loads YAMLs from ~/.livepilot/atlas-overlays/<namespace>/ into the
+# YAMLs from ~/.livepilot/atlas-overlays/<namespace>/ are loaded into the
 # module-level OverlayIndex singleton. The 3 extension_atlas_* tools
 # registered above resolve the singleton at REQUEST time (via the
-# get_overlay_index() accessor), so this load can happen after their
-# registration without ordering issues.
+# get_overlay_index() accessor).
 #
-# Failures are logged but never abort boot — server starts even if the
-# user has no overlays installed or has malformed YAMLs.
+# v1.27.3 perf batch: population moved from an unconditional import-time
+# call here (measured ~1.1s of a ~2s import with a populated overlay tree)
+# to lazy first-access population inside get_overlay_index() itself (see
+# _ensure_loaded() in mcp_server/atlas/overlays.py, guarded by a lock).
+# Nothing in this codebase depends on the singleton being populated at
+# import time — every caller resolves it via get_overlay_index() at request
+# time — so this boot hook is no longer needed.
 # Spec: docs/superpowers/specs/2026-04-25-user-local-extensions-design.md §6.1
 # ─────────────────────────────────────────────────────────────────────────
-try:
-    from .atlas.overlays import load_overlays
-    _overlay_idx_at_boot = load_overlays()
-    _overlay_count = len(_overlay_idx_at_boot.all_entries())
-    if _overlay_count:
-        logger.info(
-            f"User-local overlays loaded: {_overlay_count} entries across "
-            f"namespaces {_overlay_idx_at_boot.list_namespaces()}"
-        )
-    else:
-        logger.debug("User-local overlays: none installed at "
-                     "~/.livepilot/atlas-overlays/")
-except Exception as e:
-    logger.warning(f"User-local overlay load failed (non-fatal, server continues): {e}")
 
 
 def main():

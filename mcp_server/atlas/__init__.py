@@ -82,6 +82,16 @@ class AtlasManager:
         self._by_genre: Dict[str, List[Dict[str, Any]]] = {}
         self._by_pack: Dict[str, List[Dict[str, Any]]] = {}
 
+        # Perf batch (v1.27.3): a real 40k-device user atlas can carry
+        # ~16k duplicate ids/names/uris, and warning once per duplicate
+        # produced ~16k logger.warning calls (~122ms + multi-MB of stderr)
+        # at index-build time. Cap each category at _DUP_WARN_CAP explicit
+        # warnings and emit one summary line for the rest.
+        _DUP_WARN_CAP = 20
+        _dup_id_count = 0
+        _dup_name_count = 0
+        _dup_uri_count = 0
+
         for dev in self._devices:
             dev_id = dev.get("id", "")
             dev_name = dev.get("name", "")
@@ -91,30 +101,36 @@ class AtlasManager:
             if dev_id:
                 bucket = self._by_id.setdefault(dev_id, [])
                 if bucket and dev not in bucket:
-                    logger.warning(
-                        "atlas: duplicate device id %r (name=%r); both kept, "
-                        "lookup() returns the first — disambiguate by uri %r",
-                        dev_id, dev_name, dev_uri,
-                    )
+                    _dup_id_count += 1
+                    if _dup_id_count <= _DUP_WARN_CAP:
+                        logger.warning(
+                            "atlas: duplicate device id %r (name=%r); both kept, "
+                            "lookup() returns the first — disambiguate by uri %r",
+                            dev_id, dev_name, dev_uri,
+                        )
                 if dev not in bucket:
                     bucket.append(dev)
             if dev_name:
                 name_key = dev_name.lower()
                 name_bucket = self._by_name.setdefault(name_key, [])
                 if name_bucket and dev not in name_bucket:
-                    logger.warning(
-                        "atlas: duplicate device name %r (id=%r); both kept, "
-                        "lookup() returns the first — disambiguate by uri %r",
-                        dev_name, dev_id, dev_uri,
-                    )
+                    _dup_name_count += 1
+                    if _dup_name_count <= _DUP_WARN_CAP:
+                        logger.warning(
+                            "atlas: duplicate device name %r (id=%r); both kept, "
+                            "lookup() returns the first — disambiguate by uri %r",
+                            dev_name, dev_id, dev_uri,
+                        )
                 if dev not in name_bucket:
                     name_bucket.append(dev)
             if dev_uri:
                 if dev_uri in self._by_uri and self._by_uri[dev_uri] is not dev:
-                    logger.warning(
-                        "atlas: duplicate device uri %r shadows a prior entry "
-                        "(id=%r); last-wins", dev_uri, dev_id,
-                    )
+                    _dup_uri_count += 1
+                    if _dup_uri_count <= _DUP_WARN_CAP:
+                        logger.warning(
+                            "atlas: duplicate device uri %r shadows a prior entry "
+                            "(id=%r); last-wins", dev_uri, dev_id,
+                        )
                 self._by_uri[dev_uri] = dev
 
             # Category index
@@ -168,6 +184,22 @@ class AtlasManager:
                     pack_name = "Core Library"
             if pack_name:
                 self._by_pack.setdefault(pack_name, []).append(dev)
+
+        if _dup_id_count > _DUP_WARN_CAP:
+            logger.warning(
+                "atlas: %d more duplicate device ids suppressed",
+                _dup_id_count - _DUP_WARN_CAP,
+            )
+        if _dup_name_count > _DUP_WARN_CAP:
+            logger.warning(
+                "atlas: %d more duplicate device names suppressed",
+                _dup_name_count - _DUP_WARN_CAP,
+            )
+        if _dup_uri_count > _DUP_WARN_CAP:
+            logger.warning(
+                "atlas: %d more duplicate device uris suppressed",
+                _dup_uri_count - _DUP_WARN_CAP,
+            )
 
     # ── Properties ──────────────────────────────────────────────────
 
