@@ -215,3 +215,29 @@ def test_bug_b6_transition_issues_contribute():
     signal_types = {s.signal_type for s in report.signals}
     assert "state_transition_issues" in signal_types
     assert report.confidence > 0
+
+
+def test_recency_window_is_newest_first():
+    """The action ledger returns moves NEWEST-FIRST, so the recency window
+    must be the FRONT of `action_history`. Regression guard: previously the
+    checkers sliced `history[-15:]` / `history[-10:]`, which takes the OLDEST
+    entries once the list exceeds the window — so recent local-tweaking went
+    undetected behind older non-tweak history.
+
+    Build a 20-entry newest-first history: the 8 NEWEST are param tweaks on
+    one track (a clear local-tweaking pattern), padded by 12 OLDER structural
+    edits. With correct front-slicing the tweak signal fires; with the old
+    tail-slicing only 3 tweaks fall inside the window and the signal is missed.
+    """
+    newest_tweaks = [_kept_entry(i, scope_track="EQ Eight") for i in range(8)]
+    older_structural = [
+        {**_structural_entry(100 + i), "intent": f"structural edit {i}"}
+        for i in range(12)
+    ]
+    history = newest_tweaks + older_structural  # front = newest
+
+    report = detect_stuckness(action_history=history)
+    assert any(s.signal_type == "local_tweaking" for s in report.signals), (
+        "local_tweaking must be detected from the newest entries; tail-slicing "
+        "the newest-first history hides recent tweaks behind older edits"
+    )

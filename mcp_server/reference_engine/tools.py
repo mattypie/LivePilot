@@ -50,6 +50,12 @@ def _fetch_project_snapshot(ctx: Context) -> dict:
 
     snapshot: dict = {
         "loudness": 0.0,
+        # Unit of snapshot["loudness"]. The live SpectralCache only exposes a
+        # plain-RMS value, so the best we can derive here is RMS dBFS — NOT
+        # the K-weighted integrated LUFS that ReferenceProfile.loudness_posture
+        # carries. analyze_gaps reads this tag to convert to a common scale
+        # instead of blindly subtracting dBFS from LUFS (P2-36).
+        "loudness_unit": "rms_dbfs",
         "spectral": {},
         "width": 0.0,
         "density": 0.0,

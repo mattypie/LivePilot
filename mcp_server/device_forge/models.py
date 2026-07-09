@@ -61,6 +61,15 @@ class GenExprParam:
     unit_style: int = UNIT_STYLE_FLOAT
     exponent: float = 1.0  # 1.0 = linear
 
+    def __post_init__(self):
+        # gen~ Param names and the live.dial `prepend <name>` wiring are
+        # single-token: a name with internal whitespace ("Filter Cutoff")
+        # would emit `prepend Filter Cutoff` -> gen~ reads param "Filter" plus
+        # stray tokens and the knob silently drives no DSP. Normalize internal
+        # whitespace to underscores so both the dial wiring and the gen~ `param`
+        # declaration stay consistent (tier1a-1).
+        self.name = re.sub(r"\s+", "_", str(self.name).strip())
+
     def to_genexpr(self) -> str:
         """Generate the Param declaration for gen~ codebox."""
         return f"Param {self.name}({self.default});"

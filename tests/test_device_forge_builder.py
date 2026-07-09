@@ -14,8 +14,59 @@ from mcp_server.device_forge.builder import (
     build_amxd_binary,
     build_device,
     parse_amxd_header,
+    _ensure_safety_clip,
     ABLETON_USER_LIBRARY,
 )
+
+
+def _lines(patcher):
+    return [l["patchline"] for l in patcher["patcher"]["lines"]]
+
+
+def _box_by(patcher, pred):
+    return [b["box"] for b in patcher["patcher"]["boxes"] if pred(b["box"])]
+
+
+class TestDeviceForgeFixes:
+    def test_midi_generator_and_transformation_build_without_keyerror(self):
+        # Previously _PATCHER_BUILDERS had no entry for these → uncaught KeyError.
+        for dt in (DeviceType.MIDI_GENERATOR, DeviceType.MIDI_TRANSFORMATION):
+            spec = DeviceSpec(name="Gen", device_type=dt, gen_code="")
+            patcher = build_patcher_json(spec)
+            assert patcher["patcher"]["boxes"], f"{dt} produced an empty patcher"
+            amxd = build_amxd_binary(spec)
+            assert amxd and len(amxd) > 0
+
+    def test_audio_effect_dials_are_wired_to_gen(self):
+        # Each live.dial must reach gen~ through a [prepend <name>] box, else the
+        # knob is decorative (moving it changes no DSP).
+        spec = DeviceSpec(
+            name="Filt", device_type=DeviceType.AUDIO_EFFECT,
+            gen_code="out1 = in1 * cutoff;",
+            params=[GenExprParam(name="cutoff", default=0.5)],
+        )
+        patcher = build_patcher_json(spec)
+        dial = _box_by(patcher, lambda b: b.get("maxclass") == "live.dial")[0]
+        gen = _box_by(patcher, lambda b: b.get("text", "").startswith("gen~"))[0]
+        prepends = _box_by(patcher, lambda b: b.get("text", "").startswith("prepend cutoff"))
+        assert prepends, "no [prepend cutoff] box created for the dial"
+        prepend_id = prepends[0]["id"]
+        lines = _lines(patcher)
+        # dial float outlet -> prepend
+        assert any(l["source"][0] == dial["id"] and l["destination"][0] == prepend_id
+                   for l in lines), "dial is not wired to its prepend"
+        # prepend -> gen~
+        assert any(l["source"][0] == prepend_id and l["destination"][0] == gen["id"]
+                   for l in lines), "prepend is not wired to gen~"
+
+    def test_safety_clip_wraps_every_unclipped_output(self):
+        # One output already clipped, one not — the unclipped one must still get
+        # clamped (old code bailed entirely on any 'clip(' substring).
+        code = "out1 = clip(bigGain, -1, 1);\nout2 = bigGain;"
+        result = _ensure_safety_clip(code)
+        assert "out2 = clip(out2, -1, 1);" in result
+        # The already-clipped out1 must not be double-wrapped.
+        assert result.count("out1 = clip(") == 1
 
 
 class TestBuildPatcherJson:

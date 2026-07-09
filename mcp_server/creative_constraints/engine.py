@@ -103,14 +103,22 @@ def validate_plan_against_constraints(
 
         elif constraint == "subtraction_only":
             add_actions = {"create_clip", "create_midi_track", "create_audio_track",
-                          "duplicate_clip", "duplicate_track"}
+                          "duplicate_clip", "duplicate_track",
+                          # The most common content-ADDING tools were missing, so
+                          # subtraction_only let additions through. Real tool names:
+                          "add_notes", "add_arrangement_notes", "create_scene",
+                          "duplicate_scene", "insert_simpler_slice", "add_drum_rack_pad",
+                          "create_arrangement_clip", "insert_device", "insert_rack_chain"}
             for step in steps:
                 if step.get("action", "") in add_actions:
                     violations.append(f"Step adds content ({step['action']}) — violates subtraction_only")
 
         elif constraint == "arrangement_only":
+            # NOTE: "set_track_send" is the REAL registered send tool; the old
+            # "set_send_level" is a dead name that never matched a compiled step,
+            # so send-level moves silently passed under arrangement_only.
             mix_actions = {"set_device_parameter", "set_track_volume", "set_track_pan",
-                          "set_send_level"}
+                          "set_track_send"}
             for step in steps:
                 if step.get("action", "") in mix_actions:
                     violations.append(f"Step modifies mix ({step['action']}) — violates arrangement_only")

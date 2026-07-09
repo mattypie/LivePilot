@@ -4,8 +4,30 @@ from mcp_server.creative_constraints.engine import (
     build_constraint_set,
     distill_reference_principles,
     map_principles_to_song,
+    validate_plan_against_constraints,
 )
 from mcp_server.creative_constraints.models import CONSTRAINT_MODES
+
+
+# ── Constraint enforcement (real tool names) ─────────────────────
+
+
+def test_arrangement_only_blocks_send_level_moves():
+    """The real send tool is set_track_send; the old set_send_level name never
+    matched a compiled step, so send moves silently passed arrangement_only."""
+    cs = build_constraint_set(["arrangement_only"])
+    plan = {"steps": [{"action": "set_track_send", "track_index": 0}]}
+    result = validate_plan_against_constraints(plan, cs)
+    assert not result["valid"]
+    assert any("set_track_send" in v for v in result["violations"])
+
+
+def test_subtraction_only_blocks_add_notes():
+    """add_notes adds content and must be blocked under subtraction_only."""
+    cs = build_constraint_set(["subtraction_only"])
+    plan = {"steps": [{"action": "add_notes", "track_index": 0}]}
+    result = validate_plan_against_constraints(plan, cs)
+    assert not result["valid"]
 
 
 # ── Constraint set building ──────────────────────────────────────

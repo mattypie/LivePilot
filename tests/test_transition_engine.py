@@ -12,6 +12,7 @@ from mcp_server.transition_engine.models import (
 )
 from mcp_server.transition_engine.archetypes import (
     TRANSITION_ARCHETYPES,
+    _SECTION_PAIR_PREFERENCES,
     select_archetype,
 )
 from mcp_server.transition_engine.critics import (
@@ -351,6 +352,91 @@ class TestGestureFitCritic:
         ]
         assert len(mismatch) >= 1, (
             "A narrow archetype applied to an unrelated pair SHOULD mismatch"
+        )
+
+
+class TestGestureFitPreferredArchetypeNotFlagged:
+    """The engine selects an archetype via _SECTION_PAIR_PREFERENCES, then
+    runs run_gesture_fit_critic on it. The critic must NOT flag the engine's
+    own preferred archetype as a section mismatch — even when that archetype's
+    use_cases are semantic labels (e.g. harmonic_suspend ->
+    'chord_progression_pivot') that share no substring with the section-type
+    tokens (verse/bridge/chorus/...). Regression for the self-contradicting
+    archetype_section_mismatch on 6/14 documented section pairs.
+    """
+
+    # The 6 cited pairs whose preferred archetype used semantic use_cases that
+    # the substring heuristic could not match against section names.
+    CITED_PAIRS = [
+        ("verse", "bridge"),    # harmonic_suspend
+        ("chorus", "bridge"),   # tail_throw
+        ("chorus", "verse"),    # tail_throw
+        ("drop", "breakdown"),  # tail_throw
+        ("chorus", "outro"),    # tail_throw
+        ("verse", "outro"),     # tail_throw
+    ]
+
+    @pytest.mark.parametrize("pair", CITED_PAIRS)
+    def test_engine_chosen_archetype_not_flagged_mismatch(self, pair):
+        from_type, to_type = pair
+        boundary = TransitionBoundary(
+            from_type=from_type, to_type=to_type, energy_delta=0.1,
+        )
+        # The exact archetype the engine selects for this pair.
+        arch = select_archetype(boundary)
+        plan = TransitionPlan(boundary=boundary, archetype=arch)
+        issues = run_gesture_fit_critic(plan)
+        mismatch = [
+            i for i in issues if i.issue_type == "archetype_section_mismatch"
+        ]
+        assert len(mismatch) == 0, (
+            f"{from_type}->{to_type}: engine-preferred archetype "
+            f"'{arch.name}' was flagged as a section mismatch: "
+            f"{[i.evidence for i in mismatch]}"
+        )
+
+    @pytest.mark.parametrize("pair", CITED_PAIRS)
+    def test_all_preferred_archetypes_not_flagged(self, pair):
+        # Every archetype in the preference list for the pair is a deliberate
+        # choice — none should be flagged, not just the first-choice one.
+        boundary = TransitionBoundary(
+            from_type=pair[0], to_type=pair[1], energy_delta=0.1,
+        )
+        for arch_name in _SECTION_PAIR_PREFERENCES[pair]:
+            arch = TRANSITION_ARCHETYPES[arch_name]
+            plan = TransitionPlan(boundary=boundary, archetype=arch)
+            issues = run_gesture_fit_critic(plan)
+            mismatch = [
+                i for i in issues
+                if i.issue_type == "archetype_section_mismatch"
+            ]
+            assert len(mismatch) == 0, (
+                f"{pair[0]}->{pair[1]}: preferred archetype '{arch_name}' "
+                f"flagged as mismatch: {[i.evidence for i in mismatch]}"
+            )
+
+    def test_genuinely_wrong_archetype_still_flags(self):
+        # A non-preferred archetype with no substring/wildcard match on the
+        # pair SHOULD still be flagged — preference-based suppression must not
+        # break genuine mismatch detection. Use a synthetic narrow archetype
+        # whose use_cases share no substring with verse/bridge and which is not
+        # in the preference list for the pair.
+        boundary = TransitionBoundary(
+            from_type="verse", to_type="bridge", energy_delta=0.1,
+        )
+        arch = TransitionArchetype(
+            name="narrow_unrelated_archetype",
+            use_cases=["build_to_drop"],
+        )
+        assert arch.name not in _SECTION_PAIR_PREFERENCES[("verse", "bridge")]
+        plan = TransitionPlan(boundary=boundary, archetype=arch)
+        issues = run_gesture_fit_critic(plan)
+        mismatch = [
+            i for i in issues if i.issue_type == "archetype_section_mismatch"
+        ]
+        assert len(mismatch) >= 1, (
+            "A non-preferred archetype with no use_case overlap SHOULD still "
+            "flag archetype_section_mismatch"
         )
 
 

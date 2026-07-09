@@ -55,22 +55,25 @@ def _make_line(src_id: str, src_outlet: int,
 
 
 def _ensure_safety_clip(code: str) -> str:
-    """Append safety clipping to gen~ code to prevent speaker damage."""
-    safe = code.rstrip()
-    if "clip(" in safe.lower():
-        return safe
+    """Clamp each gen~ output to [-1, 1] to prevent speaker damage.
 
-    # Find output assignments and wrap them
+    Each `outN = ...` assignment is clamped UNLESS that specific line already
+    clips its own output. The previous version bailed entirely when the
+    substring 'clip(' appeared ANYWHERE (a comment, an unrelated helper, or
+    clipping only ONE of several outputs), shipping the remaining outputs
+    unclamped — a real loud-output hazard on Live's master/instrument chain.
+    """
+    safe = code.rstrip()
     lines = safe.split("\n")
     new_lines = []
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("out") and "=" in stripped:
+        new_lines.append(line)
+        is_output = stripped.startswith("out") and "=" in stripped
+        already_clipped = "clip(" in stripped.lower()
+        if is_output and not already_clipped:
             var = stripped.split("=")[0].strip()
-            new_lines.append(line)
             new_lines.append(f"{var} = clip({var}, -1, 1);")
-        else:
-            new_lines.append(line)
     return "\n".join(new_lines)
 
 
@@ -214,11 +217,26 @@ def _build_audio_effect_patcher(spec: DeviceSpec) -> dict:
     # plugin~ R -> plugout~ R (direct passthrough)
     lines.append(_make_line(plugin_id, 1, plugout_id, 1))
 
-    # live.dial for each parameter
+    # live.dial for each parameter, WIRED to the gen~ param of the same name.
+    # Previously the dials had no outgoing patchline, so they were decorative —
+    # moving a knob changed no DSP. live.dial emits its float on outlet 1
+    # (outlettype ["", "float"]); routing it through [prepend <name>] produces
+    # the "<name> <value>" message that sets the matching `param <name>` object
+    # inside the gen~ sub-patcher (gen~ accepts param-set messages on inlet 0
+    # alongside the audio signal).
     for i, param in enumerate(spec.params):
         did = nid()
         x = 10.0 + i * 54.0
         boxes.append(param.to_live_dial_json(did, [x, 10.0, 44.0, 48.0]))
+
+        prepend_id = nid()
+        boxes.append(_make_box(
+            prepend_id, "newobj", f"prepend {param.name}", 1, 1, [""],
+            [x, 70.0, 90.0, 22.0],
+        ))
+        # dial float outlet (1) -> prepend -> gen~ inlet 0
+        lines.append(_make_line(did, 1, prepend_id, 0))
+        lines.append(_make_line(prepend_id, 0, gen_id, 0))
 
     # Title comment
     tid = nid()
@@ -289,12 +307,23 @@ _PATCHER_BUILDERS = {
     DeviceType.AUDIO_EFFECT: _build_audio_effect_patcher,
     DeviceType.MIDI_EFFECT: _build_midi_effect_patcher,
     DeviceType.INSTRUMENT: _build_instrument_patcher,
+    # MIDI generator / transformation are MIDI-domain devices (Live's "Max MIDI
+    # Effect" preset family — see _SUBDIR_MAP), so they share the midiin→midiout
+    # patcher. Without these entries build_patcher_json raised an uncaught
+    # KeyError for two advertised, reachable device types.
+    DeviceType.MIDI_GENERATOR: _build_midi_effect_patcher,
+    DeviceType.MIDI_TRANSFORMATION: _build_midi_effect_patcher,
 }
 
 
 def build_patcher_json(spec: DeviceSpec) -> dict:
     """Build the complete .maxpat JSON patcher dict for a device spec."""
-    return _PATCHER_BUILDERS[spec.device_type](spec)
+    builder = _PATCHER_BUILDERS.get(spec.device_type)
+    if builder is None:
+        raise ValueError(
+            f"INVALID_PARAM: no patcher builder for device_type {spec.device_type!r}"
+        )
+    return builder(spec)
 
 
 def build_amxd_binary(spec: DeviceSpec) -> bytes:

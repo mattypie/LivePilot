@@ -30,6 +30,33 @@ from mcp_server.performance_engine.planner import (
     plan_scene_transition,
     suggest_energy_moves,
 )
+from mcp_server.performance_engine.tools import _to_performance_role
+from mcp_server.tools._composition_engine.models import SectionType
+
+
+# ── SectionType → performance role coercion (P0 crash guard) ──────────
+
+
+class TestSectionTypeToPerformanceRole:
+    """Regression guard: no composition SectionType may yield a role outside
+    VALID_ROLES, which would crash SceneRole.__post_init__ and take down all
+    three performance tools (get_performance_state / _safe_moves / handoff)."""
+
+    def test_every_section_type_maps_into_valid_roles(self):
+        for st in SectionType:
+            role = _to_performance_role(st.value)
+            assert role in VALID_ROLES, (
+                f"SectionType.{st.name} ({st.value!r}) → {role!r} not in VALID_ROLES"
+            )
+
+    def test_out_of_vocabulary_types_do_not_crash(self):
+        # loop / pre_chorus / bridge / unknown were the crashing inputs
+        for raw in ("loop", "pre_chorus", "bridge", "unknown", "transition_fx"):
+            assert _to_performance_role(raw) in VALID_ROLES
+
+    def test_unmapped_future_type_falls_back_to_verse(self):
+        assert _to_performance_role("some_future_type_2030") == "verse"
+        assert _to_performance_role("") == "verse"
 
 
 # ── SceneRole ─────────────────────────────────────────────────────────

@@ -24,10 +24,30 @@ def build_audio_reference_profile(comparison_data: dict) -> ReferenceProfile:
     """
     band_deltas = comparison_data.get("band_deltas", {})
 
-    # Reconstruct approximate reference spectral contour from band deltas.
-    # The deltas are (mix - ref), so ref bands are conceptually the baseline.
+    # The reference profile's band_balance MUST be the reference's OWN
+    # absolute per-band energy — NOT band_deltas (mix - ref), which is a
+    # different quantity entirely (a signed difference, not a level). Using
+    # the deltas here made analyze_gaps compute (proj_band - delta), so an
+    # identical mix produced a spurious gap equal to the project's own band
+    # energy instead of ~0.
+    #
+    # Prefer the absolute reference_band_balance emitted by
+    # compare_to_reference. If only mix bands + deltas are present,
+    # reconstruct ref = mix - delta. Fall back to {} (no spectral contour)
+    # rather than silently treating deltas as levels.
+    ref_band_balance = comparison_data.get("reference_band_balance")
+    if not ref_band_balance:
+        mix_band_balance = comparison_data.get("mix_band_balance")
+        if mix_band_balance and band_deltas:
+            ref_band_balance = {
+                band: round(mix_band_balance.get(band, 0.0) - delta, 6)
+                for band, delta in band_deltas.items()
+            }
+        else:
+            ref_band_balance = {}
+
     spectral_contour: dict = {
-        "band_balance": band_deltas,
+        "band_balance": ref_band_balance,
         "centroid_delta_hz": comparison_data.get("centroid_delta_hz", 0.0),
     }
 
@@ -103,7 +123,9 @@ def build_style_reference_profile(style_tactics: list[dict]) -> ReferenceProfile
     # shape — e.g., Auto Filter at 800Hz low-pass = darker spectrum,
     # Utility Width > 0.6 = wider stereo). Rough but non-empty values
     # are better than zeros for downstream reference-gap analysis.
-    loudness_posture = _derive_loudness_posture(style_tactics)
+    # loudness_posture is contracted to be integrated LUFS, so the [-1,+1]
+    # device-chain posture is mapped onto the LUFS axis (_style_posture_to_lufs).
+    loudness_posture = _style_posture_to_lufs(_derive_loudness_posture(style_tactics))
     spectral_contour = _derive_spectral_contour(style_tactics)
     width_depth = _derive_width_depth(style_tactics)
 
@@ -161,6 +183,27 @@ def _estimate_density_from_patterns(style_tactics: list[dict]) -> list[float]:
 
 
 # ── BUG-B50 derivations — style → loudness/spectral/width heuristics ──────
+
+
+# Style profiles infer a dimensionless loudness POSTURE in [-1, +1] from the
+# device chain (limiters/glue → louder, reverb-heavy → quieter). But
+# ReferenceProfile.loudness_posture is contracted to be integrated LUFS — the
+# gap analyzer differences it directly against the project's LUFS (gap_analyzer
+# lines 92-99). So the posture is mapped onto the LUFS axis: -14 LUFS is the
+# streaming-normalization neutral; ±6 LU spans a hot/limited master
+# (+1 → -8 LUFS) to a dynamic/quiet mix (-1 → -20 LUFS). A no-signal posture of
+# 0 lands on the -14 neutral, yielding ~no spurious loudness gap against a
+# typical project — whereas a raw 0.0 would read as a bogus ~14 LU gap.
+_STYLE_LOUDNESS_NEUTRAL_LUFS = -14.0
+_STYLE_LOUDNESS_RANGE_LU = 6.0
+
+
+def _style_posture_to_lufs(posture: float) -> float:
+    """Map a [-1, +1] device-chain loudness posture onto the integrated-LUFS
+    axis that ReferenceProfile.loudness_posture is contracted to carry."""
+    return round(
+        _STYLE_LOUDNESS_NEUTRAL_LUFS + posture * _STYLE_LOUDNESS_RANGE_LU, 2
+    )
 
 
 def _derive_loudness_posture(style_tactics: list[dict]) -> float:

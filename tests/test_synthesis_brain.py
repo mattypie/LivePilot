@@ -89,7 +89,7 @@ class TestWavetableAdapter:
             device_name="Wavetable",
             track_index=3,
             device_index=0,
-            parameter_state={"Voices": 4, "Voices Detune": 0.15, "Osc 1 Position": 0.5},
+            parameter_state={"Voices": 4, "Voices Detune": 0.15, "Osc 1 Pos": 0.5},
             display_values={"Voices": "4", "Voices Detune": "15 ct"},
             role_hint="pad",
         )
@@ -125,7 +125,7 @@ class TestWavetableAdapter:
             device_name="Wavetable",
             track_index=3,
             device_index=0,
-            parameter_state={"Osc 1 Position": 0.2, "Voices": 2, "Voices Detune": 0.05},
+            parameter_state={"Osc 1 Pos": 0.2, "Voices": 2, "Voices Detune": 0.05},
         )
         pairs = propose_synth_branches(profile)
         assert len(pairs) >= 2
@@ -154,7 +154,7 @@ class TestWavetableAdapter:
             device_name="Wavetable",
             track_index=3,
             device_index=0,
-            parameter_state={"Voices": 7, "Voices Detune": 0.25, "Osc 1 Position": 0.5},
+            parameter_state={"Voices": 7, "Voices Detune": 0.25, "Osc 1 Pos": 0.5},
         )
         pairs = propose_synth_branches(profile)
         # Only position shift should survive; no width variant.
@@ -166,7 +166,7 @@ class TestWavetableAdapter:
             device_name="Wavetable",
             track_index=3,
             device_index=0,
-            parameter_state={"Osc 1 Position": 0.2, "Voices": 2},
+            parameter_state={"Osc 1 Pos": 0.2, "Voices": 2},
         )
         conservative = propose_synth_branches(profile, kernel={"freshness": 0.2})
         bold = propose_synth_branches(profile, kernel={"freshness": 0.9})
@@ -268,7 +268,7 @@ class TestBranchSeedContract:
     def test_seeds_are_synthesis_source(self):
         profile = analyze_synth_patch(
             device_name="Wavetable", track_index=0, device_index=0,
-            parameter_state={"Osc 1 Position": 0.4},
+            parameter_state={"Osc 1 Pos": 0.4},
         )
         pairs = propose_synth_branches(profile)
         for seed, _ in pairs:
@@ -277,7 +277,7 @@ class TestBranchSeedContract:
     def test_plans_are_execution_router_compatible(self):
         profile = analyze_synth_patch(
             device_name="Wavetable", track_index=0, device_index=0,
-            parameter_state={"Osc 1 Position": 0.4, "Voices": 2},
+            parameter_state={"Osc 1 Pos": 0.4, "Voices": 2},
         )
         pairs = propose_synth_branches(profile)
         for _seed, plan in pairs:
@@ -291,7 +291,7 @@ class TestBranchSeedContract:
     def test_seeds_carry_distinctness_reason(self):
         profile = analyze_synth_patch(
             device_name="Wavetable", track_index=0, device_index=0,
-            parameter_state={"Osc 1 Position": 0.4, "Voices": 2},
+            parameter_state={"Osc 1 Pos": 0.4, "Voices": 2},
         )
         pairs = propose_synth_branches(profile)
         for seed, _ in pairs:

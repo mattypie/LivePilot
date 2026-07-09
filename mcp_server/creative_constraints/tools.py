@@ -118,16 +118,23 @@ def distill_reference_principles(
         except Exception as exc:
             logger.debug("distill_reference_principles failed: %s", exc)
 
-    # Try the built-in style profile builder
-    if not reference_profile:
+    # Try the built-in style profile builder. build_style_reference_profile
+    # takes a LIST OF TACTIC DICTS (StyleTactic.to_dict()), not a raw string —
+    # get_style_tactics resolves a NAMED style (artist/genre) to that data.
+    # Passing the bare style_name string made the builder iterate the string's
+    # characters, raise AttributeError on `char.get(...)`, and silently fall
+    # through to the text-keyword path below — so this whole branch was dead.
+    if not reference_profile and style_name:
         try:
             from ..reference_engine.profile_builder import build_style_reference_profile
-            profile = build_style_reference_profile(
-                style_name or reference_description
-            )
-            reference_profile = profile.to_dict() if profile else {}
+            from ..tools._research_engine import get_style_tactics
+            tactics = get_style_tactics(style_name)
+            tactic_dicts = [t.to_dict() for t in tactics]
+            if tactic_dicts:
+                profile = build_style_reference_profile(tactic_dicts)
+                reference_profile = profile.to_dict() if profile else {}
         except Exception as exc:
-            logger.debug("distill_reference_principles failed: %s", exc)
+            logger.debug("distill_reference_principles style-profile failed: %s", exc)
 
     # Text-keyword fallback ALWAYS merges in. Style tactics + profile
     # builder typically leave some fields empty; the description's
@@ -247,6 +254,14 @@ def generate_constrained_variants(
         # variants to status='blocked', and count blocked_count in the
         # response so callers can detect the "all variants filtered" case.
         blocked_count = 0
+        # Surface which constraints are advisory-only (recognized but NOT
+        # enforced by the filter). These depend on the constraint SET, not the
+        # plan, so compute once. Without this, a caller requesting a purely
+        # advisory constraint gets blocked_count=0 with no signal that
+        # enforcement was advisory-only.
+        constraint_meta = engine.validate_plan_against_constraints({"steps": []}, active)
+        unenforced_constraints = constraint_meta.get("unenforced_constraints", [])
+        constraint_warnings = constraint_meta.get("warnings", [])
         for v in ps.variants:
             v.what_preserved = (
                 f"{v.what_preserved} | Constraints: "
@@ -291,6 +306,8 @@ def generate_constrained_variants(
         return {
             "preview_set": ps.to_dict(),
             "constraints_applied": active.constraints,
+            "unenforced_constraints": unenforced_constraints,
+            "constraint_warnings": constraint_warnings,
             "blocked_count": blocked_count,
             "executable_count": len(ps.variants) - blocked_count,
             "note": note,

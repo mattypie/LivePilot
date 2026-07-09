@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
+from .archetypes import _SECTION_PAIR_PREFERENCES
 from .models import TransitionBoundary, TransitionPlan, TransitionScore
 
 
@@ -275,7 +276,18 @@ def run_gesture_fit_critic(
     # honor it explicitly so archetypes documented as universal don't get
     # flagged as mismatched on specific pairs like intro→build.
     WILDCARDS = {"any_section_change", "any"}
-    if any(uc in WILDCARDS for uc in archetype.use_cases):
+    pair = (boundary.from_type, boundary.to_type)
+    preferred_for_pair = _SECTION_PAIR_PREFERENCES.get(pair, [])
+    if archetype.name in preferred_for_pair:
+        # The engine deliberately selects archetypes from this preference list
+        # via select_archetype(). Several preferred archetypes describe their
+        # use_cases with semantic labels (e.g. harmonic_suspend ->
+        # "chord_progression_pivot") that share no substring with section-type
+        # names, so the substring heuristic below would otherwise flag the
+        # engine's own chosen archetype as a mismatch. Treat membership in the
+        # preference map as an authoritative match.
+        use_case_match = True
+    elif any(uc in WILDCARDS for uc in archetype.use_cases):
         use_case_match = True
     else:
         pair_tags = {

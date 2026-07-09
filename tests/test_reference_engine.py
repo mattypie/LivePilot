@@ -186,6 +186,58 @@ class TestBuildStyleProfile:
         p = build_style_reference_profile([tactic])
         assert p.harmonic_character == "atmospheric_filtered"
 
+    def test_loud_chain_maps_loudness_posture_to_lufs_not_score(self):
+        """A limiter/glue-heavy chain must yield loudness_posture as integrated
+        LUFS (the documented contract), NOT a raw [-1,+1] posture score. The
+        [-1,+1] heuristic is mapped onto the LUFS axis (+1 → -8 LUFS)."""
+        tactic = {
+            "artist_or_genre": "techno",
+            "tactic_name": "loud_master",
+            "arrangement_patterns": [],
+            "device_chain": [
+                {"name": "Glue Compressor", "params": {}},
+                {"name": "Limiter", "params": {}},
+            ],
+            "automation_gestures": [],
+        }
+        p = build_style_reference_profile([tactic])
+        # Posture +1 (loud) → -14 + 1*6 = -8.0 LUFS, not the raw score 1.0.
+        assert p.loudness_posture == pytest.approx(-8.0, abs=0.01)
+
+    def test_reverb_heavy_chain_maps_to_quieter_lufs(self):
+        """A reverb-heavy (dynamic/quiet) chain → posture -1 → -20 LUFS."""
+        tactic = {
+            "artist_or_genre": "ambient",
+            "tactic_name": "wash",
+            "arrangement_patterns": [],
+            "device_chain": [{"name": "Reverb", "params": {"Dry/Wet": 0.7}}],
+            "automation_gestures": [],
+        }
+        p = build_style_reference_profile([tactic])
+        assert p.loudness_posture == pytest.approx(-20.0, abs=0.01)
+
+    def test_no_loudness_signal_neutral_lufs_no_spurious_gap(self):
+        """Regression: a chain with no loudness-signaling devices must map to
+        the -14 LUFS neutral, NOT 0.0. Against a typical -14 LUFS project this
+        yields ~no loudness gap — whereas the old raw 0.0 read as a bogus
+        ~14 LU gap in analyze_reference_gaps."""
+        tactic = {
+            "artist_or_genre": "lofi",
+            "tactic_name": "neutral",
+            "arrangement_patterns": [],
+            "device_chain": [{"name": "EQ Eight", "params": {}}],
+            "automation_gestures": [],
+        }
+        p = build_style_reference_profile([tactic])
+        assert p.loudness_posture == pytest.approx(-14.0, abs=0.01)
+
+        report = analyze_gaps({"loudness": -14.0, "loudness_unit": "lufs"}, p)
+        loudness_gaps = [g for g in report.gaps if g.domain == "loudness"]
+        assert loudness_gaps, "loudness gap entry should exist"
+        # The whole point: delta ~0 and NOT flagged relevant (old code: -14.0).
+        assert loudness_gaps[0].delta == pytest.approx(0.0, abs=0.01)
+        assert loudness_gaps[0].relevant is False
+
 
 # ── Gap analyzer tests ─────────────────────────────────────────────
 
@@ -446,3 +498,171 @@ def test_fetch_snapshot_width_zero_when_no_tracks():
     ctx = _make_ctx(spectrum={"mid": 0.5}, tracks=[])
     snapshot = _fetch_project_snapshot(ctx)
     assert snapshot["width"] == 0.0
+
+
+# ── P2-35: audio profile stores absolute ref bands, not deltas ────────
+
+
+class TestAudioProfileAbsoluteBands:
+    def test_absolute_reference_bands_preferred(self):
+        """P2-35: build_audio_reference_profile must store the reference's
+        OWN absolute band_balance, never band_deltas (mix - ref)."""
+        comparison = {
+            "reference_lufs": -14.0,
+            "band_deltas": {"sub_60hz": 0.05, "mid_2khz": -0.03},
+            "reference_band_balance": {"sub_60hz": 0.40, "mid_2khz": 0.25},
+            "mix_band_balance": {"sub_60hz": 0.45, "mid_2khz": 0.22},
+        }
+        p = build_audio_reference_profile(comparison)
+        bands = p.spectral_contour["band_balance"]
+        # Absolute reference levels, NOT the deltas.
+        assert bands == {"sub_60hz": 0.40, "mid_2khz": 0.25}
+        assert bands != comparison["band_deltas"]
+
+    def test_reconstructs_ref_from_mix_minus_delta(self):
+        """When only mix bands + deltas are present, reconstruct ref = mix - delta."""
+        comparison = {
+            "band_deltas": {"sub_60hz": 0.05, "mid_2khz": -0.03},
+            "mix_band_balance": {"sub_60hz": 0.45, "mid_2khz": 0.22},
+        }
+        p = build_audio_reference_profile(comparison)
+        bands = p.spectral_contour["band_balance"]
+        assert bands["sub_60hz"] == pytest.approx(0.40, abs=1e-6)  # 0.45 - 0.05
+        assert bands["mid_2khz"] == pytest.approx(0.25, abs=1e-6)  # 0.22 - (-0.03)
+
+    def test_identical_mix_yields_zero_spectral_gap(self):
+        """End-to-end P2-35: an identical mix (deltas all 0, ref == mix bands)
+        produces ~zero spectral gaps — not a gap equal to the band energy."""
+        mix_bands = {"sub_60hz": 0.45, "mid_2khz": 0.30}
+        comparison = {
+            "reference_lufs": -14.0,
+            "band_deltas": {b: 0.0 for b in mix_bands},
+            "reference_band_balance": dict(mix_bands),
+            "mix_band_balance": dict(mix_bands),
+        }
+        profile = build_audio_reference_profile(comparison)
+        snapshot = {"spectral": {"band_balance": dict(mix_bands)}}
+        report = analyze_gaps(snapshot, profile)
+        spectral_gaps = [g for g in report.gaps if g.domain == "spectral"]
+        assert spectral_gaps == []  # no band crosses the 0.01 relevance threshold
+
+    def test_old_delta_as_levels_behavior_is_gone(self):
+        """Regression guard: the buggy path stored band_deltas as band_balance,
+        so an identical mix produced a spurious gap == project band energy."""
+        mix_bands = {"sub_60hz": 0.45, "mid_2khz": 0.30}
+        comparison = {
+            "band_deltas": {b: 0.0 for b in mix_bands},
+            "reference_band_balance": dict(mix_bands),
+            "mix_band_balance": dict(mix_bands),
+        }
+        profile = build_audio_reference_profile(comparison)
+        # If the old bug were present, band_balance would equal the (zero)
+        # deltas and the identical-mix gap would equal each band's energy.
+        assert profile.spectral_contour["band_balance"] == mix_bands
+
+
+# ── P2-36: loudness compared on a common scale (LUFS vs LUFS) ─────────
+
+
+class TestLoudnessScaleMatch:
+    def test_rms_dbfs_converted_to_lufs_before_delta(self):
+        """P2-36: a project loudness tagged rms_dbfs must be converted onto
+        the integrated-LUFS axis before subtracting loudness_posture."""
+        # Reference at -14 LUFS. Project RMS dBFS of -14.0 is ~-14.691 LUFS,
+        # so the gap should be ~-0.691 LU, NOT 0.0.
+        snapshot = {"loudness": -14.0, "loudness_unit": "rms_dbfs"}
+        ref = ReferenceProfile(loudness_posture=-14.0)
+        report = analyze_gaps(snapshot, ref)
+        loud = [g for g in report.gaps if g.domain == "loudness"][0]
+        assert loud.delta == pytest.approx(-0.69, abs=0.01)
+
+    def test_lufs_unit_passes_through_unchanged(self):
+        """A project loudness already in LUFS is differenced directly."""
+        snapshot = {"loudness": -10.0, "loudness_unit": "lufs"}
+        ref = ReferenceProfile(loudness_posture=-14.0)
+        report = analyze_gaps(snapshot, ref)
+        loud = [g for g in report.gaps if g.domain == "loudness"][0]
+        assert loud.delta == pytest.approx(4.0, abs=0.01)
+
+    def test_identical_loudness_yields_near_zero_gap(self):
+        """An identical project (same LUFS, both tagged) yields ~zero loudness gap."""
+        snapshot = {"loudness": -14.0, "loudness_unit": "lufs"}
+        ref = ReferenceProfile(loudness_posture=-14.0)
+        report = analyze_gaps(snapshot, ref)
+        loud = [g for g in report.gaps if g.domain == "loudness"][0]
+        assert loud.delta == pytest.approx(0.0, abs=0.01)
+        assert loud.relevant is False  # below the 1.0 LU relevance threshold
+
+    def test_snapshot_default_unit_is_rms_dbfs(self):
+        """The live snapshot derives RMS, so it must declare loudness_unit."""
+        from mcp_server.reference_engine.tools import _fetch_project_snapshot
+
+        ctx = _make_ctx(spectrum={"mid": 0.5})
+        snapshot = _fetch_project_snapshot(ctx)
+        assert snapshot["loudness_unit"] == "rms_dbfs"
+
+
+# ── P2-37: overall_distance normalizes per-domain before summing ──────
+
+
+class TestOverallDistanceNormalization:
+    def test_pacing_does_not_dominate_spectral(self):
+        """P2-37: a small (1-section) pacing delta must not overwhelm a large
+        spectral delta after normalization."""
+        # pacing delta = 1 section (scale 2.0 -> 0.5 normalized)
+        # spectral delta = 0.1 in a band (scale 0.1 -> 1.0 normalized)
+        snapshot = {
+            "spectral": {"band_balance": {"mid": 0.30}},
+            "pacing": [{"label": "a"}],
+        }
+        ref = ReferenceProfile(
+            spectral_contour={"band_balance": {"mid": 0.20}},
+            section_pacing=[],  # proj has 1, ref has 0 -> pacing delta 1
+        )
+        report = analyze_gaps(snapshot, ref)
+        spectral = next(g for g in report.gaps if g.domain == "spectral")
+        pacing = next(g for g in report.gaps if g.domain == "pacing")
+        # Raw: pacing delta 1.0 >> spectral delta 0.1. After normalization the
+        # spectral term (1.0) should exceed the pacing term (0.5).
+        assert abs(pacing.delta) > abs(spectral.delta)  # raw magnitudes
+        spectral_norm = abs(spectral.delta) / 0.1
+        pacing_norm = abs(pacing.delta) / 2.0
+        assert spectral_norm > pacing_norm
+
+    def test_distance_uses_normalized_terms(self):
+        """The reported overall_distance must equal the normalized Euclidean sum,
+        not the raw-delta sum."""
+        snapshot = {
+            "spectral": {"band_balance": {"mid": 0.30}},
+            "pacing": [{"label": "a"}],
+        }
+        ref = ReferenceProfile(
+            spectral_contour={"band_balance": {"mid": 0.20}},
+            section_pacing=[],
+        )
+        report = analyze_gaps(snapshot, ref)
+        # Normalized: spectral (0.1/0.1)=1.0, pacing (1.0/2.0)=0.5
+        expected = math.sqrt(1.0 ** 2 + 0.5 ** 2)
+        assert report.overall_distance == pytest.approx(expected, abs=1e-3)
+        # Raw (buggy) distance would be sqrt(0.1**2 + 1.0**2) ≈ 1.005.
+        raw = math.sqrt(0.1 ** 2 + 1.0 ** 2)
+        assert report.overall_distance != pytest.approx(raw, abs=1e-3)
+
+    def test_identical_project_yields_zero_distance(self):
+        """An identical project (zero deltas everywhere) -> ~zero distance."""
+        bands = {"sub_60hz": 0.45, "mid_2khz": 0.30}
+        snapshot = {
+            "loudness": -14.0,
+            "loudness_unit": "lufs",
+            "spectral": {"band_balance": dict(bands)},
+            "width": 0.2,
+            "pacing": [],
+        }
+        ref = ReferenceProfile(
+            loudness_posture=-14.0,
+            spectral_contour={"band_balance": dict(bands)},
+            width_depth={"stereo_width": 0.2},
+            section_pacing=[],
+        )
+        report = analyze_gaps(snapshot, ref)
+        assert report.overall_distance == pytest.approx(0.0, abs=1e-6)

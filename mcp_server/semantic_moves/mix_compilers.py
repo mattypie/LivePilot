@@ -14,6 +14,53 @@ from .models import SemanticMove
 from . import resolvers
 
 
+def _kernel_track(kernel: dict, track_index: int) -> dict:
+    """Return the raw kernel track dict (with its `devices`) for an index.
+
+    resolvers.find_tracks_by_role returns a slimmed dict without `devices`, so
+    device resolution must reach back into the raw session_info track to see the
+    chain. Returns {} when not found.
+    """
+    for t in kernel.get("session_info", {}).get("tracks", []) or []:
+        if isinstance(t, dict) and t.get("index") == track_index:
+            return t
+    return {}
+
+
+def _find_eq_device_index(track: dict) -> int | None:
+    """Return the chain index of an EQ device on this track, or None.
+
+    Only inspects device data the kernel already carries — never assumes a
+    device that hasn't been confirmed present. Used so frequency-carve writes
+    target a resolved device rather than a blind device_index=0 (the
+    wrong-device hazard guarded by tests/test_compiler_safety_contract.py).
+    """
+    for i, dev in enumerate(track.get("devices", []) or []):
+        if not isinstance(dev, dict):
+            continue
+        name = str(dev.get("name", "")).lower()
+        class_name = str(dev.get("class_name", "")).lower()
+        if "eq" in name or "eq8" in class_name or "eqeight" in class_name:
+            return dev.get("index", i)
+    return None
+
+
+def _find_compressor_device_index(track: dict) -> int | None:
+    """Return the chain index of a Compressor on this track, or None.
+
+    Same kernel-snapshot-only discipline as _find_eq_device_index — used so the
+    sidechain routing targets a resolved compressor rather than a blind index.
+    """
+    for i, dev in enumerate(track.get("devices", []) or []):
+        if not isinstance(dev, dict):
+            continue
+        name = str(dev.get("name", "")).lower()
+        class_name = str(dev.get("class_name", "")).lower()
+        if "compressor" in name or "compressor" in class_name:
+            return dev.get("index", i)
+    return None
+
+
 def _compile_make_punchier(move: SemanticMove, kernel: dict) -> CompiledPlan:
     """Compile 'make_punchier': push drums, pull pads, tighten master bus."""
     steps = []
@@ -146,7 +193,13 @@ def _compile_tighten_low_end(move: SemanticMove, kernel: dict) -> CompiledPlan:
 
 
 def _compile_widen_stereo(move: SemanticMove, kernel: dict) -> CompiledPlan:
-    """Compile 'widen_stereo': pan harmonic elements wider, add depth."""
+    """Compile 'widen_stereo': pan harmonic elements wider, add depth.
+
+    Fallback: when no lead/harmonic tracks are role-classified (e.g., tracks
+    are named "Q-Call"/"A-Answer" which don't match role keywords), fall back
+    to widening prominent non-drum / non-bass tracks. This prevents the move
+    from no-opping on mixes with unusually-named tracks.
+    """
     steps = []
     warnings = []
     descriptions = []
@@ -155,35 +208,73 @@ def _compile_widen_stereo(move: SemanticMove, kernel: dict) -> CompiledPlan:
     lead_tracks = resolvers.find_tracks_by_role(kernel, ["lead"])
     perc_tracks = resolvers.find_tracks_by_role(kernel, ["percussion"])
 
+    # Fallback: if no harmonic/lead tracks found via role, use prominent
+    # non-drum/non-bass tracks (any role except drums/bass/fx/unknown=skip).
+    # This covers real-world mixes where melodic tracks are named after their
+    # musical function ("Q-Call", "A-Answer", "Melody 1") rather than role keywords.
+    using_fallback = False
     if not chord_tracks and not lead_tracks:
-        warnings.append("No harmonic or lead tracks found for stereo widening")
+        all_tracks = resolvers.find_tracks_by_role(
+            kernel, ["chords", "pad", "lead", "percussion", "fx", "unknown"]
+        )
+        # Exclude drums and bass by collecting everything non-drum/non-bass
+        exclude_roles = {"drums", "bass"}
+        all_raw_tracks = kernel.get("session_info", {}).get("tracks", [])
+        fallback_tracks = [
+            {
+                "index": t.get("index", 0),
+                "name": t.get("name", ""),
+                "role": resolvers.infer_role(t.get("name", "")),
+                "volume": t.get("volume"),
+                "pan": t.get("pan"),
+                "mute": t.get("mute", False),
+                "solo": t.get("solo", False),
+            }
+            for t in all_raw_tracks
+            if resolvers.infer_role(t.get("name", "")) not in exclude_roles
+        ]
+        if fallback_tracks:
+            # Use up to first 2 as a left/right pair
+            chord_tracks = fallback_tracks[:1]
+            lead_tracks = fallback_tracks[1:2]
+            using_fallback = True
+            warnings.append(
+                "No harmonic or lead tracks found by role — "
+                "falling back to widening prominent non-drum/non-bass tracks: "
+                + ", ".join(t["name"] for t in fallback_tracks[:2])
+            )
+        else:
+            warnings.append("No harmonic, lead, or wideable tracks found — no changes")
 
-    # Pan chords left
+    # Pan chords/first-fallback left
     for ct in chord_tracks[:1]:
         steps.append(CompiledStep(
             tool="set_track_pan",
             params={"track_index": ct["index"], "pan": -0.35},
-            description=f"Pan {ct['name']} left (-35%) for width",
+            description=f"Pan {ct['name']} left (-35%) for width"
+            + (" [fallback]" if using_fallback else ""),
         ))
         descriptions.append(f"Pan {ct['name']} left 35%")
 
-    # Pan lead right
+    # Pan lead/second-fallback right
     for lt in lead_tracks[:1]:
         steps.append(CompiledStep(
             tool="set_track_pan",
             params={"track_index": lt["index"], "pan": 0.30},
-            description=f"Pan {lt['name']} right (+30%) for width",
+            description=f"Pan {lt['name']} right (+30%) for width"
+            + (" [fallback]" if using_fallback else ""),
         ))
         descriptions.append(f"Pan {lt['name']} right 30%")
 
-    # Pan perc slightly
-    for pt in perc_tracks[:1]:
-        steps.append(CompiledStep(
-            tool="set_track_pan",
-            params={"track_index": pt["index"], "pan": 0.15},
-            description=f"Pan {pt['name']} slightly right (+15%)",
-        ))
-        descriptions.append(f"Pan {pt['name']} slightly right")
+    # Pan perc slightly (only when using primary role classification)
+    if not using_fallback:
+        for pt in perc_tracks[:1]:
+            steps.append(CompiledStep(
+                tool="set_track_pan",
+                params={"track_index": pt["index"], "pan": 0.15},
+                description=f"Pan {pt['name']} slightly right (+15%)",
+            ))
+            descriptions.append(f"Pan {pt['name']} slightly right")
 
     # Verify
     steps.append(CompiledStep(
@@ -288,12 +379,16 @@ def _compile_reduce_repetition(move: SemanticMove, kernel: dict) -> CompiledPlan
 
 
 def _compile_make_kick_bass_lock(move: SemanticMove, kernel: dict) -> CompiledPlan:
-    """Compile 'make_kick_bass_lock': carve space between kick and bass.
+    """Compile 'make_kick_bass_lock': carve frequency space between kick and bass.
 
-    Strategy: reduce bass level slightly (clears sub for kick), verify both
-    tracks remain active. Sidechain compressor insertion is left as a future
-    step — it requires device selection + parameter mapping that varies too
-    much across projects to hardcode safely.
+    Strategy (real frequency separation + timing):
+      1. Read bass EQ/filter state first so we know what's already there.
+      2. Insert an EQ Eight on the bass track (or use an existing one) and
+         apply a high-pass shelf dip in the kick's fundamental band (40-80 Hz)
+         to clear sub space for the kick.
+      3. Set up a sidechain compressor on the bass keyed from the kick track
+         so bass ducks on every kick hit — the defining "lock" gesture.
+      4. Optional: minor volume trim only if needed after the above two steps.
     """
     steps: list[CompiledStep] = []
     warnings: list[str] = []
@@ -319,18 +414,124 @@ def _compile_make_kick_bass_lock(move: SemanticMove, kernel: dict) -> CompiledPl
 
     if bass_tracks:
         bass = bass_tracks[0]
-        idx = bass["index"]
+        bass_idx = bass["index"]
+
+        # Step: read bass device chain state before touching it
         steps.append(CompiledStep(
-            tool="set_track_volume",
-            params={"track_index": idx, "volume": 0.60},
-            description=f"Pull {bass['name']} to 0.60 to clear sub for kick",
+            tool="get_device_parameters",
+            params={"track_index": bass_idx, "device_index": 0},
+            description=f"Read {bass['name']} device chain state before carving",
+            verify_after=False,
+            optional=True,
         ))
-        descriptions.append(f"Pull {bass['name']} to 0.60")
+
+        # Frequency separation: carve a high-pass into an EQ on the bass so the
+        # kick's sub-fundamental has room. We only write EQ band parameters when
+        # the kernel already exposes a resolvable EQ device on this track — a
+        # device inserted in THIS plan has no known index at compile time, so a
+        # device_index=0 write would be a blind (wrong-device) target. See
+        # tests/test_compiler_safety_contract.py for the invariant this honors.
+        eq_idx = _find_eq_device_index(_kernel_track(kernel, bass_idx))
+        if eq_idx is not None:
+            # EQ confirmed present in the kernel snapshot → safe to carve it.
+            # EQ Eight band 1: "1 FilterType" (0 = Low Cut / High-pass),
+            # "1 Frequency" (Hz).
+            steps.append(CompiledStep(
+                tool="set_device_parameter",
+                params={
+                    "track_index": bass_idx,
+                    "device_index": eq_idx,
+                    "parameter_name": "1 FilterType",
+                    "value": 0.0,  # Low Cut / High-pass
+                },
+                description=f"Set EQ band 1 to High-Pass on {bass['name']} (device {eq_idx})",
+            ))
+            steps.append(CompiledStep(
+                tool="set_device_parameter",
+                params={
+                    "track_index": bass_idx,
+                    "device_index": eq_idx,
+                    "parameter_name": "1 Frequency",
+                    "value": 60.0,   # 60 Hz — clears kick sub without losing bass body
+                },
+                description=f"Set HP cutoff to 60 Hz on {bass['name']} EQ (device {eq_idx})",
+            ))
+            descriptions.append("HP carve @ 60 Hz on existing EQ")
+        else:
+            # No resolvable EQ → insert one as a scaffold. The HP-carve must be
+            # applied AFTER insertion (the new device's index isn't known until
+            # runtime); the sidechain below provides the timing lock regardless.
+            steps.append(CompiledStep(
+                tool="insert_device",
+                params={
+                    "track_index": bass_idx,
+                    "device_name": "EQ Eight",
+                    "position": 0,
+                },
+                description=f"Insert EQ Eight on {bass['name']} for kick-sub carve",
+            ))
+            descriptions.append(f"EQ Eight on {bass['name']}")
+            warnings.append(
+                f"Apply a band-1 high-pass (~60 Hz) to the new EQ on "
+                f"{bass['name']} after insertion — device index is not "
+                "resolvable at plan time."
+            )
+
+        # Timing lock: sidechain a compressor on the bass, keyed from the kick,
+        # so the bass ducks on every kick hit. The real compressor_set_sidechain
+        # tool only ROUTES the detector input on an EXISTING compressor
+        # (signature: track_index, device_index, source_type, source_channel —
+        # it does NOT set threshold/ratio/attack/release). So resolve a
+        # compressor from the kernel snapshot or insert one as a scaffold (its
+        # post-insert index isn't known at plan time → no blind device writes).
+        if kick_tracks:
+            kick = kick_tracks[0]
+            comp_idx = _find_compressor_device_index(_kernel_track(kernel, bass_idx))
+            if comp_idx is not None:
+                steps.append(CompiledStep(
+                    tool="set_device_parameter",
+                    params={
+                        "track_index": bass_idx,
+                        "device_index": comp_idx,
+                        "parameter_name": "S/C On",
+                        "value": 1.0,
+                    },
+                    description=f"Enable sidechain on {bass['name']} compressor (device {comp_idx})",
+                ))
+                steps.append(CompiledStep(
+                    tool="compressor_set_sidechain",
+                    params={
+                        "track_index": bass_idx,
+                        "device_index": comp_idx,
+                        "source_type": kick["name"],
+                        "source_channel": "Post FX",
+                    },
+                    description=(
+                        f"Route {kick['name']} into {bass['name']} compressor "
+                        "sidechain — bass ducks on every kick hit"
+                    ),
+                ))
+                descriptions.append(f"Sidechain {bass['name']} ← {kick['name']}")
+            else:
+                steps.append(CompiledStep(
+                    tool="insert_device",
+                    params={
+                        "track_index": bass_idx,
+                        "device_name": "Compressor",
+                    },
+                    description=f"Insert Compressor on {bass['name']} for kick sidechain",
+                ))
+                descriptions.append(f"Compressor on {bass['name']}")
+                warnings.append(
+                    f"After inserting the Compressor on {bass['name']}, enable "
+                    f"'S/C On' and route {kick['name']} (Post FX) into its "
+                    "sidechain — device index is not resolvable at plan time."
+                )
 
     steps.append(CompiledStep(
         tool="get_track_meters",
         params={"include_stereo": True},
-        description="Verify kick and bass both still producing audio",
+        description="Verify kick and bass both still producing audio after carve",
     ))
 
     return CompiledPlan(

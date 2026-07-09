@@ -22,9 +22,48 @@ _RELEVANCE_THRESHOLDS: dict[str, float] = {
     "harmonic": 0.0,     # always relevant if different
 }
 
+# Per-domain normalization scales for _compute_overall_distance. Raw deltas
+# live in incompatible units (loudness in LU, width/spectral/density in 0-1
+# fractions, pacing in section COUNT), so summing their squares directly lets
+# the large-magnitude domains (loudness, pacing) dominate while sub-unity
+# spectral/width deltas contribute nothing (P2-37). Dividing each delta by a
+# characteristic "one notable step" for its domain converts every term into a
+# comparable, dimensionless number before the Euclidean sum.
+_NORMALIZATION_SCALES: dict[str, float] = {
+    "loudness": 6.0,     # ~6 LU is a clearly audible loudness gap
+    "spectral": 0.1,     # a 0.1 shift in a band's energy fraction is large
+    "width": 0.2,        # 0.2 of the 0-1 stereo-width range is substantial
+    "density": 0.3,      # 0.3 of the 0-1 density range is a big arrangement move
+    "pacing": 2.0,       # a 2-section structural difference is significant
+    "harmonic": 1.0,     # harmonic delta is already a 0/1 indicator
+}
+_DEFAULT_NORMALIZATION_SCALE = 1.0
+
 # When a gap exceeds this fraction of the project value, closing it
 # risks flattening identity.
 _IDENTITY_WARNING_THRESHOLD = 0.6
+
+# ReferenceProfile.loudness_posture is always integrated LUFS (see models.py).
+# The project snapshot may report loudness in a different scale, so we tag it
+# with "loudness_unit" and convert to LUFS here before differencing. The ITU
+# BS.1770 K-weighting has near-unity broadband gain plus a fixed -0.691 dB
+# absolute-calibration offset, so a full-program RMS dBFS ≈ LUFS - 0.691. This
+# is an approximation (it ignores K-weighting's frequency tilt and gating), but
+# it keeps both sides of the loudness delta on the SAME axis — far better than
+# subtracting a plain dBFS RMS from an integrated LUFS (P2-36).
+_RMS_DBFS_TO_LUFS_OFFSET = -0.691
+
+
+def _project_loudness_in_lufs(loudness: float, unit: str) -> float:
+    """Convert a project-snapshot loudness reading to the integrated-LUFS
+    scale used by ReferenceProfile.loudness_posture."""
+    if unit in ("lufs", "integrated_lufs"):
+        return loudness
+    if unit in ("rms_dbfs", "dbfs"):
+        return loudness + _RMS_DBFS_TO_LUFS_OFFSET
+    # Unknown unit: assume it is already on the LUFS axis rather than
+    # corrupting it with an offset we can't justify.
+    return loudness
 
 
 # ── Main analysis ──────────────────────────────────────────────────
@@ -50,7 +89,12 @@ def analyze_gaps(
     ref_id = f"{reference.source_type}"
 
     # 1. Loudness gap
-    proj_loudness = project_snapshot.get("loudness", 0.0)
+    # Both sides must be on the integrated-LUFS axis. The reference always is;
+    # the project snapshot declares its unit so we can convert (P2-36).
+    raw_loudness = project_snapshot.get("loudness", 0.0)
+    proj_loudness = _project_loudness_in_lufs(
+        raw_loudness, project_snapshot.get("loudness_unit", "lufs")
+    )
     if reference.loudness_posture != 0.0 or proj_loudness != 0.0:
         delta = proj_loudness - reference.loudness_posture
         gaps.append(GapEntry(
@@ -200,11 +244,22 @@ def _is_identity_risk(project_value: float, delta: float) -> bool:
 
 
 def _compute_overall_distance(gaps: list[GapEntry]) -> float:
-    """Euclidean-like distance across all relevant gap deltas."""
+    """Euclidean distance across relevant gap deltas, normalized per-domain.
+
+    Each delta is divided by a characteristic scale for its domain so that
+    deltas measured in incompatible units (LU, 0-1 fractions, section counts)
+    become dimensionless and comparable before the Euclidean sum (P2-37).
+    """
     relevant = [g for g in gaps if g.relevant]
     if not relevant:
         return 0.0
-    sum_sq = sum(g.delta ** 2 for g in relevant)
+    sum_sq = 0.0
+    for g in relevant:
+        scale = _NORMALIZATION_SCALES.get(g.domain, _DEFAULT_NORMALIZATION_SCALE)
+        if scale <= 0:
+            scale = _DEFAULT_NORMALIZATION_SCALE
+        normalized = g.delta / scale
+        sum_sq += normalized ** 2
     return math.sqrt(sum_sq)
 
 

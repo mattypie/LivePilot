@@ -190,7 +190,10 @@ def _state_signals_to_signal_list(state: dict) -> list[StucknessSignal]:
 
 def _check_repeated_undos(history: list[dict]) -> Optional[StucknessSignal]:
     """Check for repeated undone moves (kept=False in ledger entries)."""
-    recent = history[-20:] if len(history) > 20 else history
+    # `history` is NEWEST-FIRST (action ledger get_recent_moves), so the
+    # recency window is the FRONT of the list. `history[-N:]` would take the
+    # OLDEST N entries — analyzing stale history once the list exceeds N.
+    recent = history[:20]
     undo_count = sum(1 for a in recent if a.get("kept") is False)
 
     if undo_count >= 4:
@@ -204,9 +207,9 @@ def _check_repeated_undos(history: list[dict]) -> Optional[StucknessSignal]:
 
 def _check_local_tweaking(history: list[dict]) -> Optional[StucknessSignal]:
     """Check for many small parameter changes in one local area."""
-    recent = history[-15:] if len(history) > 15 else history
+    recent = history[:15]  # newest-first: front = most recent
     param_tools = {"set_device_parameter", "set_track_volume", "set_track_pan",
-                   "set_send_level", "set_clip_loop", "batch_set_parameters"}
+                   "set_track_send", "set_clip_loop", "batch_set_parameters"}
     param_entries = []
     for entry in recent:
         tools_used = [a.get("tool", "") for a in entry.get("actions", [])]
@@ -232,7 +235,7 @@ def _check_loop_without_structure(
     history: list[dict], section_count: int
 ) -> Optional[StucknessSignal]:
     """Check for long work without structural changes."""
-    recent = history[-30:] if len(history) > 30 else history
+    recent = history[:30]  # newest-first: front = most recent
     structural_tools = {"create_clip", "delete_clip", "create_midi_track",
                         "create_audio_track", "delete_track", "duplicate_clip"}
     structural = 0
@@ -260,7 +263,7 @@ def _check_loop_without_structure(
 
 def _check_repeated_requests(history: list[dict]) -> Optional[StucknessSignal]:
     """Check for repeated similar intents without acceptance."""
-    recent = history[-10:] if len(history) > 10 else history
+    recent = history[:10]  # newest-first: front = most recent
     intents = [a.get("intent", "").lower() for a in recent if a.get("intent")]
 
     if len(intents) >= 3:

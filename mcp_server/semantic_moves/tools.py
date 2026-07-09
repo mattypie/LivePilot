@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastmcp import Context
@@ -323,7 +324,7 @@ async def apply_semantic_move(
 
     # Build a lightweight kernel from session info
     ableton = ctx.lifespan_context["ableton"]
-    session_info = ableton.send_command("get_session_info")
+    session_info = await asyncio.to_thread(ableton.send_command, "get_session_info")
     kernel = {
         "session_info": session_info,
         "mode": mode,
@@ -394,7 +395,77 @@ async def apply_semantic_move(
             "ok": er.ok,
         })
 
-    success_count = sum(1 for s in executed_steps if s["ok"])
+    # ── Verify-after playback guard ──────────────────────────────────────────
+    # get_track_meters returns is_playing=False + all-zero values when the
+    # transport is stopped. Counting such a step as "ok" inflates success_count
+    # with meaningless verification signal. Detect this pattern and annotate
+    # affected steps as verification_skipped so the caller knows the result
+    # cannot confirm that the move had the intended audible effect.
+    #
+    # Detection heuristic: step tool is get_track_meters or get_master_meters
+    # AND the returned result contains is_playing=False (or is_playing absent
+    # and all numeric meter values are exactly 0.0). We do not modify ok=True
+    # (the tool call itself succeeded) — we add a side-channel flag.
+    _METER_VERIFY_TOOLS = {"get_track_meters", "get_master_meters"}
+    meter_verify_skipped_count = 0
+    for es in executed_steps:
+        if es["tool"] not in _METER_VERIFY_TOOLS:
+            continue
+        if not es["ok"] or es["result"] is None:
+            continue
+        result_data = es["result"]
+        if not isinstance(result_data, dict):
+            continue
+        # is_playing key present and explicitly False → stopped transport.
+        # NOTE: the meter verify steps run through the remote_command path,
+        # whose handler returns the BARE meter shape with NO is_playing key
+        # (the MCP-wrapper that annotates is_playing is bypassed here). So we
+        # ALSO apply the all-zero-meters fallback when is_playing is absent.
+        is_playing_flag = result_data.get("is_playing")
+        skip = False
+        note = ""
+        if is_playing_flag is False:
+            skip = True
+            note = (
+                "Playback was stopped — meter values are zero; "
+                "verification deferred until transport is running"
+            )
+        elif is_playing_flag is None:
+            # Collect every present numeric meter value (track shape or
+            # single-track/master shape). If there IS at least one and they
+            # are ALL exactly 0.0, the transport is almost certainly stopped
+            # → unverifiable. Guard against an empty tracks list so "no
+            # tracks" is not mistaken for "stopped".
+            meter_vals = []
+            tracks = result_data.get("tracks")
+            if isinstance(tracks, list) and tracks:
+                for t in tracks:
+                    if isinstance(t, dict):
+                        for k in ("level", "left", "right"):
+                            v = t.get(k)
+                            if isinstance(v, (int, float)):
+                                meter_vals.append(v)
+            else:
+                for k in ("level", "left", "right"):
+                    v = result_data.get(k)
+                    if isinstance(v, (int, float)):
+                        meter_vals.append(v)
+            if meter_vals and all(v == 0.0 for v in meter_vals):
+                skip = True
+                note = (
+                    "Meters all zero (transport likely stopped) — "
+                    "verification deferred until audio is playing"
+                )
+        if skip:
+            es["verification_skipped"] = True
+            es["verification_note"] = note
+            meter_verify_skipped_count += 1
+
+    # success_count: tool calls that succeeded AND are NOT skipped verify steps
+    success_count = sum(
+        1 for s in executed_steps
+        if s["ok"] and not s.get("verification_skipped", False)
+    )
     failure_count = sum(1 for s in executed_steps if not s["ok"])
 
     # store_purpose: writer
@@ -437,6 +508,13 @@ async def apply_semantic_move(
     result["execution_results"] = executed_steps
     result["success_count"] = success_count
     result["failure_count"] = failure_count
+    if meter_verify_skipped_count > 0:
+        result["verification_note"] = (
+            f"{meter_verify_skipped_count} meter verification step(s) skipped: "
+            "playback was stopped when meters were read — start transport before "
+            "re-running this move to get meaningful before/after confirmation"
+        )
+        result["verification_skipped_count"] = meter_verify_skipped_count
     if ledger_entry_id is not None:
         result["ledger_entry_id"] = ledger_entry_id
     return result

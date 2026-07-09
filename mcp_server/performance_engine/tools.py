@@ -40,6 +40,39 @@ _POSITIONAL_FALLBACK_ROLES = {
     "default": "verse",
 }
 
+# _composition_engine's SectionType vocabulary is RICHER than the performance
+# VALID_ROLES set (it adds loop / pre_chorus / bridge / unknown / transition_fx).
+# Feeding one of those straight into SceneRole(role=...) trips its __post_init__
+# guard and raises ValueError, which crashes get_performance_state /
+# get_performance_safe_moves / plan_scene_handoff the moment ANY scene resolves
+# to an out-of-vocabulary type (e.g. a scene named "Drums"/"My Idea" → unknown).
+# Map every composition type into the performance vocabulary by musical role.
+_SECTION_TYPE_TO_PERF_ROLE = {
+    "intro": "intro",
+    "verse": "verse",
+    "chorus": "chorus",
+    "build": "build",
+    "drop": "drop",
+    "breakdown": "breakdown",
+    "outro": "outro",
+    "transition": "transition",
+    "transition_fx": "transition",
+    "pre_chorus": "build",     # a pre-chorus builds toward the chorus
+    "bridge": "breakdown",     # a bridge is a contrasting, lower-energy section
+    "loop": "verse",           # a bare loop / idea reads as a steady verse
+    "unknown": "verse",        # neutral default
+}
+
+
+def _to_performance_role(value: str) -> str:
+    """Coerce any composition SectionType value into the performance vocabulary.
+
+    Falls back to 'verse' for any value not in the map so a future SectionType
+    can never crash the performance tools.
+    """
+    role = _SECTION_TYPE_TO_PERF_ROLE.get(value)
+    return role if role is not None else "verse"
+
 
 def _positional_fallback_role(index: int, scene_count: int) -> str:
     """Map a scene index to a role when no composition data is available.
@@ -148,21 +181,36 @@ def _fetch_scene_data(ctx: Context) -> tuple[list[SceneRole], int]:
         name = scene_data.get("name", f"Scene {i}")
         ce_sec = ce_by_scene_idx.get(i)
         if ce_sec is not None:
-            # SectionType is an enum; .value gives the string vocabulary
+            # SectionType is an enum; .value gives the string vocabulary, which
+            # we then coerce into the (narrower) performance VALID_ROLES set.
             stype = ce_sec.section_type
-            role = stype.value if hasattr(stype, "value") else str(stype)
+            raw = stype.value if hasattr(stype, "value") else str(stype)
+            role = _to_performance_role(raw)
             energy = float(ce_sec.energy)
         else:
             # Unnamed scene or build failed — positional fallback
             role = _positional_fallback_role(i, scene_count)
             energy = _positional_fallback_energy(role)
 
-        scene_roles.append(SceneRole(
-            scene_index=i,
-            name=name,
-            energy_level=energy,
-            role=role,
-        ))
+        # Clamp energy and defensively construct: SceneRole.__post_init__ raises
+        # on an out-of-range energy or an unmapped role, and a single raise here
+        # would take down the whole tool. A bad value degrades to a safe scene.
+        energy = max(0.0, min(1.0, energy))
+        try:
+            scene_roles.append(SceneRole(
+                scene_index=i,
+                name=name,
+                energy_level=energy,
+                role=role,
+            ))
+        except ValueError as exc:
+            logger.debug("_fetch_scene_data SceneRole(%r) invalid: %s", role, exc)
+            scene_roles.append(SceneRole(
+                scene_index=i,
+                name=name,
+                energy_level=energy,
+                role="verse",
+            ))
 
     # Determine current scene — default to 0 since session_info
     # doesn't expose a selected_scene field

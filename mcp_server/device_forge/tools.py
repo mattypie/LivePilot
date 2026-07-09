@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -48,11 +49,13 @@ async def generate_m4l_effect(
     }
     dt = type_map.get(device_type)
     if dt is None:
-        return {"error": f"Invalid device_type: {device_type}. Use: audio_effect, midi_effect, instrument"}
+        return {"error": f"INVALID_PARAM: Invalid device_type: {device_type}. Use one of: {', '.join(type_map)}"}
 
     parsed_params = []
     if params:
         for p in params:
+            if not isinstance(p, dict) or "name" not in p:
+                return {"error": f"INVALID_PARAM: each param requires a 'name' key, got: {p!r}"}
             parsed_params.append(GenExprParam(
                 name=p["name"],
                 default=p.get("default", 0.5),
@@ -72,9 +75,16 @@ async def generate_m4l_effect(
     if install:
         subdir = _SUBDIR_MAP[dt]
         output_dir = ABLETON_USER_LIBRARY / subdir
-        path = build_device(spec, output_dir=output_dir)
     else:
-        path = build_device(spec, output_dir=tempfile.mkdtemp(prefix="livepilot_forge_"))
+        # Reuse ONE forge directory under the system temp instead of spawning a
+        # fresh mkdtemp() per call (those accumulated, never cleaned). The .amxd
+        # is the returned deliverable so it must persist for the caller.
+        output_dir = Path(tempfile.gettempdir()) / "livepilot_forge"
+
+    # build_device does blocking filesystem I/O (mkdir + write_bytes). This is
+    # an async tool running on the event loop, so offload to a worker thread to
+    # avoid freezing all other handlers + the bridge UDP endpoint.
+    path = await asyncio.to_thread(build_device, spec, output_dir)
 
     return {
         "status": "created",
