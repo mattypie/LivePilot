@@ -13,6 +13,20 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# BUG-B39: the real atlas scanner emits "instruments" / "audio_effects" but
+# older callers and test fixtures sometimes pass the singular "instrument" /
+# "effect". Hoisted to module scope (was previously re-declared inline in
+# search()) so both search() and the truncation-warning helper below share
+# one alias table instead of drifting independently.
+_CATEGORY_ALIASES: Dict[str, set] = {
+    "instrument": {"instrument", "instruments"},
+    "instruments": {"instrument", "instruments"},
+    "effect": {"effect", "effects", "audio_effects"},
+    "effects": {"effect", "effects", "audio_effects"},
+    "audio_effect": {"effect", "effects", "audio_effects", "audio_effect"},
+    "audio_effects": {"effect", "effects", "audio_effects", "audio_effect"},
+}
+
 
 class AtlasManager:
     """In-memory device atlas with indexed lookups."""
@@ -33,6 +47,23 @@ class AtlasManager:
         if "version" in data and "version" not in self._meta:
             self._meta["version"] = data["version"]
         self._devices: List[Dict[str, Any]] = data.get("devices", [])
+
+        # P3-47 truncation observability: scan_full_library persists
+        # stats.category_truncated (keyed by atlas device-category, e.g.
+        # "drum_kits"/"sounds"/"samples") whenever the last scan hit its
+        # max_per_category cap — or ran out of the remote script's shared
+        # iteration safety bound — mid-category. Read it once here so
+        # search()/suggest() callers can be warned their results for a
+        # truncated category are a lower bound, not the full inventory.
+        raw_stats = data.get("stats", {})
+        raw_truncated = (
+            raw_stats.get("category_truncated", {})
+            if isinstance(raw_stats, dict) else {}
+        )
+        self._category_truncated: Dict[str, bool] = {
+            str(cat): bool(hit)
+            for cat, hit in raw_truncated.items()
+        } if isinstance(raw_truncated, dict) else {}
 
         # ── Build indexes ───────────────────────────────────────────
         # P2-12: _by_id / _by_name keep a LIST of every device sharing a
@@ -169,6 +200,49 @@ class AtlasManager:
             },
         }
 
+    # ── Truncation observability (P3-47) ──────────────────────────
+    def truncated_categories(self) -> List[str]:
+        """Categories where the atlas's last scan_full_library run hit
+        its max_per_category cap (or the remote script's shared iteration
+        safety bound) mid-category. Devices in these categories are a
+        lower bound, not the full inventory, until a rescan completes."""
+        return sorted(
+            cat for cat, hit in self._category_truncated.items() if hit
+        )
+
+    def truncation_warning(self, category: str = "all") -> Optional[str]:
+        """Return a warning string if `category` overlaps a category
+        flagged truncated in the loaded atlas's scan stats, else None.
+
+        category="all" (the default `atlas_search`/`atlas_suggest` filter)
+        warns if ANY category was truncated, since an unfiltered query
+        silently includes those partial results alongside complete ones.
+        A specific category only warns when it (or an alias — see
+        _CATEGORY_ALIASES) is in the truncated set.
+        """
+        truncated = self.truncated_categories()
+        if not truncated:
+            return None
+
+        if category == "all":
+            hit = truncated
+        else:
+            allowed = _CATEGORY_ALIASES.get(category, {category})
+            hit = [cat for cat in truncated if cat in allowed]
+            if not hit:
+                return None
+
+        return (
+            "Atlas categor%s %s may be incomplete — the last scan hit its "
+            "size cap for %s. Run scan_full_library(force=True) (raise "
+            "max_per_category if your library is unusually large) for a "
+            "complete inventory before trusting an exhaustive search here."
+        ) % (
+            "y" if len(hit) == 1 else "ies",
+            ", ".join(sorted(hit)),
+            "this category" if len(hit) == 1 else "these categories",
+        )
+
     # ── Pack lookup ────────────────────────────────────────────────
     def pack_info(self, pack_name: str) -> Dict[str, Any]:
         """Return summary of a pack — device list + enrichment coverage.
@@ -290,22 +364,10 @@ class AtlasManager:
         query_words = query_lower.split()
         results: List[Dict[str, Any]] = []
 
-        # BUG-B39: the real atlas scanner emits "instruments" /
-        # "audio_effects" but older callers and test fixtures sometimes
-        # pass the singular "instrument" / "effect". Build a tolerant
-        # category alias set so both forms work.
-        _CAT_ALIASES = {
-            "instrument": {"instrument", "instruments"},
-            "instruments": {"instrument", "instruments"},
-            "effect": {"effect", "effects", "audio_effects"},
-            "effects": {"effect", "effects", "audio_effects"},
-            "audio_effect": {"effect", "effects", "audio_effects",
-                             "audio_effect"},
-            "audio_effects": {"effect", "effects", "audio_effects",
-                              "audio_effect"},
-        }
+        # Tolerant category alias set so "instrument" and "instruments"
+        # (etc.) both work — see module-level _CATEGORY_ALIASES.
         allowed_cats = (
-            _CAT_ALIASES.get(category, {category})
+            _CATEGORY_ALIASES.get(category, {category})
             if category != "all" else None
         )
 

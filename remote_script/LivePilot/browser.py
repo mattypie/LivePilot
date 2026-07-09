@@ -411,6 +411,13 @@ def load_browser_item(song, params):
     )
 
 
+# Global safety bound on total LOM child-accesses across the ENTIRE scan
+# (all categories combined) — see P3-47. This used to reset per category
+# because `_counter` defaulted to a fresh [0] on every top-level
+# `_scan_recursive` call, so the real worst case was
+# _SCAN_MAX_ITERATIONS * len(categories) synchronous main-thread LOM
+# accesses. scan_browser_deep now threads a single shared counter through
+# every category's recursion so this constant is an honest total budget.
 _SCAN_MAX_ITERATIONS = 100000
 
 
@@ -448,22 +455,61 @@ def scan_browser_deep(song, params):
     Parameters
     ----------
     max_per_category : int, optional
-        Maximum items to collect per top-level category (default 1000).
+        Maximum items to collect per top-level category (default 25000).
+        Raised from the original 1000 (BUG-2026-06-21 #11 /
+        DEEP_REVIEW P1-11): a default of 1000 silently truncated large
+        alphabetically-ordered categories before reaching most of the
+        alphabet — e.g. drum_kits stopped at "Crash" (0 kicks, 2 hats),
+        and `sounds` stopped inside "Brass" (no Pads/Keys/Leads at all).
+        25000 comfortably covers every known category in the full
+        factory + pack library while `_SCAN_MAX_ITERATIONS` still bounds
+        worst-case main-thread work.
     max_depth : int, optional
         Maximum recursion depth into the browser tree (default 4).
+
+    Returns
+    -------
+    dict
+        ``categories``: ``{cat_name: [{"name", "uri", "is_loadable"}, ...]}``
+        ``counts``: ``{cat_name: <item count>}`` — per-category item counts,
+            always present so callers can detect truncation without
+            recomputing `len()` on the (potentially large) categories dict.
+        ``category_truncated``: ``{cat_name: bool}`` — True when a category
+            either hit `max_per_category` directly, OR the scan overall ran
+            out of its shared `_SCAN_MAX_ITERATIONS` iteration budget before
+            finishing that category (P3-47) — in both cases the category's
+            item list is a lower bound, not the true total.
     """
-    max_per_category = int(params.get("max_per_category", 1000))
+    max_per_category = int(params.get("max_per_category", 25000))
     max_depth = int(params.get("max_depth", 4))
     browser = _get_browser()
     categories = _get_categories(browser)
 
     result = {}
+    counts = {}
+    truncated = {}
+    # P3-47 fix: ONE counter object shared across every top-level category's
+    # _scan_recursive call, instead of a fresh [0] per category. This makes
+    # _SCAN_MAX_ITERATIONS a true global ceiling on main-thread LOM accesses
+    # for the whole scan_browser_deep call, not a per-category one.
+    shared_counter = [0]
     for cat_name, cat_item in categories.items():
         items = []
-        _scan_recursive(cat_item, items, 0, max_depth, max_per_category)
+        _scan_recursive(
+            cat_item, items, 0, max_depth, max_per_category, shared_counter
+        )
         result[cat_name] = items
+        counts[cat_name] = len(items)
+        truncated[cat_name] = (
+            len(items) >= max_per_category
+            or shared_counter[0] > _SCAN_MAX_ITERATIONS
+        )
 
-    return {"categories": result}
+    return {
+        "categories": result,
+        "counts": counts,
+        "category_truncated": truncated,
+    }
 
 
 @register("get_device_presets")

@@ -226,7 +226,7 @@ def atlas_search(ctx: Context, query: str, category: str = "all", limit: int = 1
             "source": f"user_overlay:{entry.namespace}",
         })
 
-    return {
+    response: dict = {
         "query": query,
         "category": category,
         "count": len(results),
@@ -234,6 +234,14 @@ def atlas_search(ctx: Context, query: str, category: str = "all", limit: int = 1
         "overlay_count": len(overlay_results),
         "results": results,
     }
+    # P3-47: warn when this query's category overlaps a category the last
+    # scan_full_library run had to truncate — the factory results above
+    # are a lower bound for that category, not the full inventory.
+    if atlas is not None:
+        warning = atlas.truncation_warning(category)
+        if warning:
+            response["warning"] = warning
+    return response
 
 
 @mcp.tool()
@@ -349,12 +357,19 @@ def atlas_suggest(
         # LIVE#3: patch out bogus query:Synths# URIs for M4L pack instruments
         _patch_m4l_uri(suggestion, dev)
         suggestions.append(suggestion)
-    return {
+    response: dict = {
         "intent": intent,
         "genre": genre,
         "energy": energy,
         "suggestions": suggestions,
     }
+    # P3-47: suggest() searches across every category internally, so warn
+    # like an unfiltered ("all") search would if the last scan truncated
+    # any category — the ranked candidates above may be missing devices.
+    warning = atlas.truncation_warning("all")
+    if warning:
+        response["warning"] = warning
+    return response
 
 
 @mcp.tool()
@@ -759,7 +774,7 @@ def atlas_pack_info(ctx: Context, pack_name: str = "") -> dict:
 def scan_full_library(
     ctx: Context,
     force: bool = False,
-    max_per_category: int = 5000,
+    max_per_category: int = 25000,
 ) -> dict:
     """Scan the full Ableton browser and rebuild the device atlas.
 
@@ -768,18 +783,24 @@ def scan_full_library(
     Results are merged with curated enrichments and saved to device_atlas.json.
 
     force: if True, rescan even if atlas already exists (default False)
-    max_per_category: ceiling per category (default 5000). The previous
-        hardcoded 1000 cap silently truncated large categories — for
-        example, the samples category alone has ~22,000 items per the
-        browser tree, so the reported count "1000 samples" was wrong by
-        a factor of 22 (BUG-2026-04-22 #12). Raise this if your library
-        is huge; lower it for fast smoke scans.
+    max_per_category: ceiling per category (default 25000, matching the
+        remote script's own default — DEEP_REVIEW P1-11). The original
+        hardcoded 1000 cap silently truncated large categories in
+        browser-tree (alphabetical) order — e.g. drum_kits stopped at
+        "Crash" (0 kicks, 2 hats), and the samples category alone has
+        ~22,000 items per the browser tree, so a "1000 samples" count was
+        wrong by a factor of 22 (BUG-2026-04-22 #12). Raise this further
+        if your library is even bigger; lower it for fast smoke scans.
 
     Returns a stats dict including `truncated_categories` listing any
     category that hit the cap (so callers know the count is a lower
-    bound rather than the true total).
+    bound rather than the true total). The same information is folded
+    into `stats.category_truncated` (keyed by atlas device-category, e.g.
+    "drum_kits"/"sounds"/"samples") and persisted into device_atlas.json
+    so AtlasManager can warn future atlas_search/atlas_suggest calls that
+    touch a truncated category without requiring a fresh scan first.
     """
-    from .scanner import normalize_scan_results
+    from .scanner import normalize_scan_results, _CATEGORY_MAP
     from .enrichments import load_enrichments, merge_enrichments
     from . import AtlasManager, USER_ATLAS_DIR, USER_ATLAS_PATH
 
@@ -817,17 +838,34 @@ def scan_full_library(
     # Normalize
     devices = normalize_scan_results(raw)
 
-    # Detect truncation: per-category count == cap means we likely hit it.
-    truncated_categories = []
+    # Detect truncation (P3-47). Prefer the explicit `category_truncated`
+    # map emitted by scan_browser_deep on updated remote scripts — it
+    # correctly flags a category as truncated both when it hit
+    # max_per_category directly AND when the shared iteration safety bound
+    # cut the scan short mid-category. Older (pre-update) remote scripts
+    # only echo a `counts`/`stats` mapping of ints, so fall back to the
+    # count>=cap heuristic in that case.
+    truncated_categories: list = []
+    raw_category_truncated: dict = {}
     if isinstance(raw, dict):
-        per_cat = raw.get("counts") or raw.get("stats") or {}
-        if isinstance(per_cat, dict):
-            for cat, count in per_cat.items():
-                try:
-                    if int(count) >= max_per_category:
-                        truncated_categories.append(cat)
-                except (TypeError, ValueError):
-                    continue
+        explicit_truncated = raw.get("category_truncated")
+        if isinstance(explicit_truncated, dict):
+            raw_category_truncated = {
+                cat: bool(hit) for cat, hit in explicit_truncated.items()
+            }
+            truncated_categories = [
+                cat for cat, hit in raw_category_truncated.items() if hit
+            ]
+        else:
+            per_cat = raw.get("counts") or raw.get("stats") or {}
+            if isinstance(per_cat, dict):
+                for cat, count in per_cat.items():
+                    try:
+                        if int(count) >= max_per_category:
+                            truncated_categories.append(cat)
+                            raw_category_truncated[cat] = True
+                    except (TypeError, ValueError):
+                        continue
 
     # Load and merge enrichments
     enrichments = load_enrichments(enrichments_dir)
@@ -839,6 +877,19 @@ def scan_full_library(
         cat = device.get("category", "other")
         stats[cat] = stats.get(cat, 0) + 1
     stats["enriched_devices"] = sum(1 for d in devices if d.get("enriched"))
+
+    # Truncation observability persisted into device_atlas.json so
+    # AtlasManager can warn callers later without needing the raw scan
+    # payload. Raw browser category names (e.g. "drums", "sounds") are
+    # remapped through the scanner's category vocabulary (e.g.
+    # "drum_kits") so the flags line up with the same `category` values
+    # atlas_search / atlas_suggest actually filter on.
+    stats["category_counts"] = dict(raw.get("counts", {})) if isinstance(raw, dict) else {}
+    stats["category_truncated"] = {
+        _CATEGORY_MAP.get(raw_cat, raw_cat): True
+        for raw_cat, hit in raw_category_truncated.items()
+        if hit
+    }
 
     # Read the actual running Live version from the session rather than
     # hardcoding "12.3.6" — the hardcoded string was baking last year's
