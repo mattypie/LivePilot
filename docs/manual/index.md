@@ -126,27 +126,35 @@ See the full [User Corpus Guide](../USER_CORPUS_GUIDE.md) for end-to-end walkthr
 
 ## Domain Map
 
+The table below is auto-generated from the live tool registry — do not
+hand-edit the region between the `DOMAIN_MAP` markers. Regenerate with
+`python3 scripts/sync_metadata.py --fix` (or directly via
+`python3 scripts/generate_tool_catalog.py --domain-map`); `--check` fails CI
+if this block drifts from the registry.
+
+<!-- DOMAIN_MAP:AUTO-GENERATED START -->
+
 All 467 tools across 56 domains, in source-truth per-domain counts:
 
-### Core Ableton Control (Layer 1 — 218 tools)
+### Core Ableton Control (Layer 1 — 245 tools)
 
 | Domain | # | Scope |
 |--------|:-:|-------|
 | Devices | 42 | Load by name/URI, insert native (12.3+), params, racks, chains, drum pads, plugins, presets, wavetable mod matrix, replace_sample (12.4+), `add_drum_rack_pad`, `verify_device_alive` (v1.16+) |
 | Arrangement | 21 | Timeline editing, arrangement notes, native clips (12.1.10+), cue points, recording, capture, `set_arrangement_automation_via_session_record` (v1.17+) |
-| Transport | 21 | Playback, tempo, time sig, loop, metronome, undo/redo, diagnostics, capture MIDI |
 | Tracks | 21 | Create MIDI/audio/return, delete, duplicate, arm, mute, solo, routing, sends, monitoring |
+| Transport | 21 | Playback, tempo, time sig, loop, metronome, undo/redo, diagnostics, capture MIDI |
 | Memory | 18 | Save, recall, replay, session memory, list/favorite/delete, update |
 | Clips | 16 | Create, delete, duplicate, fire, stop, loop, launch mode, warp mode, pitch, color |
 | Scenes | 12 | Create, delete, duplicate, fire, name, color, per-scene tempo, follow actions |
 | Mixing | 11 | Volume, pan, sends, routing, meters, return tracks, mix snapshot |
 | Automation | 9 | Clip envelopes, 16 curve types, 15 recipes, spectral suggestions |
 | Composition | 9 | Section analysis, motif detection, emotional arc, form planning |
+| Follow Actions | 8 | Clip + scene follow actions, presets, type listing |
 | Notes | 8 | Add/get/remove/modify MIDI, transpose, duplicate, per-note probability |
 | Scales | 8 | Clip scales, song scales, scale modes, list available scales |
-| Follow Actions | 8 | Clip + scene follow actions, presets, type listing |
-| Theory | 7 | Harmony analysis, Roman numerals, scales, countermelody, transposition |
 | Grooves | 7 | Groove templates, per-clip groove, groove amount, groove params |
+| Theory | 7 | Harmony analysis, Roman numerals, scales, countermelody, transposition |
 | Take Lanes | 6 | Create, name, list, per-lane clips |
 | Generative | 5 | Euclidean rhythm, tintinnabuli, phase shift, additive process |
 | Browser | 4 | Search library, browse tree, load items |
@@ -154,52 +162,57 @@ All 467 tools across 56 domains, in source-truth per-domain counts:
 | MIDI I/O | 4 | Export/import .mid, offline analysis, piano roll extraction |
 | MidiTool | 4 | Device install, generator registration, per-clip target mapping |
 
-### Perception (Layer 2 — 45 tools)
+### Perception (Layer 2 — 46 tools)
 
 | Domain | # | Scope |
 |--------|:-:|-------|
-| Analyzer | 37 | 9-band spectrum (v1.17+), RMS, key detection, Simpler ops, warp markers, capture, FluCoMa mel/chroma/onset `[M4L]` |
+| Analyzer | 38 | 9-band spectrum (v1.17+), RMS, key detection, Simpler ops, warp markers, capture, FluCoMa mel/chroma/onset `[M4L]` |
 | Perception | 4 | Offline loudness, spectral analysis, reference comparison, metadata |
 | Diagnostics | 3 | Device/session health verification, test-note fire-and-forget |
 | Evaluation | 1 | Before/after evaluation with structured scoring |
 
-### Creative Intelligence (Layer 3 — 164 tools, ~20 engines)
+### Creative Intelligence (Layer 3 — 162 tools)
 
 | Domain | # | Scope |
 |--------|:-:|-------|
 | Sample Engine | 23 | Multi-source search (Splice gRPC + browser + filesystem), Splice catalog hunt, downloads, previews, pack info, collections, presets, describe-a-sound (LIVE), variations (LIVE), http-diagnose (v1.17+) |
+| Atlas | 22 | Search 5264 devices, suggest by intent, chain building, comparison, library scan, `atlas_pack_info`, `atlas_describe_chain` (free-text), `atlas_techniques_for_device` (reverse-lookup), `atlas_macro_fingerprint` (preset similarity), Pack-Atlas cross-pack tools (`atlas_transplant`, `atlas_extract_chain`, `atlas_cross_pack_chain`, `atlas_pack_aware_compose`, `atlas_demo_story`), hybrid-surface Layer B (`atlas_explore`, `atlas_audition`, `atlas_substitute`) — all v1.17+ unless noted; plus `extension_atlas_search` / `extension_atlas_get` / `extension_atlas_list` for user-local overlays (v1.23.0+) |
+| Agent OS | 9 | Session kernel, action ledger, capability state, routing, goal vectors, taste, turn budget |
+| Composer | 9 | Prompt → multi-layer composition plan, sample augmentation, plan preview, branches, develop-mode apply, hybrid Ableton-Knowledge consultation |
 | Hook Hunter | 9 | Hook detection, salience scoring, neglect detection, phrase impact |
-| Atlas | 13 | Search 5264 devices, suggest by intent, chain building, comparison, library scan, `atlas_pack_info`, `atlas_describe_chain` (free-text), `atlas_techniques_for_device` (reverse-lookup) — all v1.17+; plus `extension_atlas_search` / `extension_atlas_get` / `extension_atlas_list` for user-local overlays (v1.23.0+) |
-| Agent OS | 8 | Session kernel, action ledger, capability state, routing, goal vectors, taste |
+| Runtime | 7 | Session kernel building, world model, capability, safety, resume intent, Live 12.4 probe-first tools (`probe_link_audio`, `probe_stem_workflow`) |
 | Session Continuity | 7 | Creative threads, turn resolution, session story, anti-preferences |
-| Musical Intelligence | 6 | Phrase arc, impact scoring, comparison, rendering, grid analysis, snapshot |
 | Mix Engine | 6 | Critic-driven mix analysis, issue detection, move planning |
-| Preview Studio | 5 | Variant creation, preview rendering, comparison, commit, discard |
-| Runtime | 5 | Session kernel building, world model, capability, safety, resume intent |
-| Experiment | 5 | Create, run, compare, commit, discard A/B experiment branches |
+| Musical Intelligence | 6 | Phrase arc, impact scoring, comparison, rendering, grid analysis, snapshot |
 | Creative Constraints | 5 | Constraint activation, reference-inspired variants |
-| Sound Design | 4 | Patch analysis, modulation planning, timbre scoring |
-| Composer | 4 | Prompt → multi-layer composition plan, sample augmentation, plan preview, branches |
+| Experiment | 5 | Create, run, compare, commit, discard A/B experiment branches |
+| Preview Studio | 5 | Variant creation, preview rendering, comparison, commit, discard |
 | Semantic Moves | 4 | Move listing, preview, application, next-best-move proposal |
-| Transition Engine | 3 | Transition classification, scoring, archetype planning |
-| Reference Engine | 3 | Reference profiling, principle distillation, gap analysis |
+| Sound Design | 4 | Patch analysis, modulation planning, timbre scoring |
+| Device Forge | 3 | Generate M4L devices from gen~ templates, install to browser |
+| Grader | 3 | Rubric-based session evaluation — list rubrics, run one, run all |
 | Performance Engine | 3 | Safety-constrained suggestions, safe moves, scene handoff |
+| Reference Engine | 3 | Reference profiling, principle distillation, gap analysis |
+| Research | 3 | Technique research, style tactics |
 | Song Brain | 3 | Identity inference, sacred elements, drift monitoring |
 | Stuckness Detector | 3 | Momentum analysis, rescue classification, rescue workflows |
-| Wonder Mode | 3 | Diagnosis-driven variants, taste-aware ranking, session discard |
-| Research | 3 | Technique research, style tactics |
 | Synthesis Brain | 3 | Synth patch analysis, branch proposals, timbre fingerprint extraction |
-| Device Forge | 3 | Generate M4L devices from gen~ templates, install to browser |
+| Transition Engine | 3 | Transition classification, scoring, archetype planning |
+| Wonder Mode | 3 | Diagnosis-driven variants, taste-aware ranking, session discard |
+| Creative Director | 2 | Brief-compliance checking for a proposed tool call, hybrid-brief compilation from multiple concept packets |
 | Motif | 2 | Motif graph, motif transformation |
-| Project Brain | 2 | Project-level analysis, section purpose inference |
 | Planner | 2 | Gesture planning, arrangement planning |
+| Project Brain | 2 | Project-level analysis, section purpose inference |
 | Translation Engine | 2 | Cross-domain translation, issue detection |
+| Audit | 1 | Single-call §5 layer-precision audit (timbre + sequence + stereo + masking) for one track |
 
-### Personal Library Awareness (Layer 4 — 14 tools) `[v1.23.4+]`
+### Personal Library Awareness (Layer 4 — 14 tools)
 
 | Domain | # | Scope |
 |--------|:-:|-------|
 | User Corpus | 14 | Plugin Knowledge Engine 4-phase pipeline. `corpus_setup_wizard`, `corpus_init`, `corpus_status`, `corpus_list_scanners`, `corpus_add_source`, `corpus_remove_source`, `corpus_scan` (file-level), `corpus_detect_plugins` (auval-aware), `corpus_canonicalize_plugins` (VST3-preferred dedup), `corpus_cluster_plugins` (vendor-batched research), `corpus_trim_plugin_identity` (deprioritization), `corpus_discover_manuals`, `corpus_research_targets`, `corpus_emit_synthesis_briefs` |
+
+<!-- DOMAIN_MAP:AUTO-GENERATED END -->
 
 ---
 

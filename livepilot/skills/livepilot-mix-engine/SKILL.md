@@ -27,6 +27,14 @@ If the M4L analyzer bridge is absent, critics fall back to role-based heuristics
 
 For detailed frequency collision data, call `get_masking_report`. For a quick status overview without the full critic pass, call `get_mix_summary`.
 
+Each masking entry carries `measured` and `severity_basis`: `measured=True` /
+`severity_basis="spectral_overlap"` means `severity` came from real per-track
+spectral data; `measured=False` / `severity_basis="role_heuristic"` means it's
+a role-pair prior with no per-track measurement behind it. Treat
+`measured=False` entries as low-confidence hypotheses, not verified problems —
+solo the pair and read `get_master_spectrum` before acting on them. See
+`livepilot-core` SKILL.md → "Response Fields You Must Check".
+
 ### Step 2 — Plan
 
 Pick the highest-severity issue from the `issues` array. Call `plan_mix_move` with the issue data. The planner returns the smallest intervention that addresses the problem — a single parameter change, not a chain of edits.

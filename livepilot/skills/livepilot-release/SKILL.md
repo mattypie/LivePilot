@@ -31,7 +31,7 @@ Run this checklist EVERY time the user says "update everything", "push", "releas
 Current: **467 tools across 56 domains**.
 Spectral/analyzer (bridge-only): **38**. The remaining tool surface works without the bridge or degrades gracefully. Backed by 32 bridge commands.
 
-Verify: `grep -rc "@mcp.tool" mcp_server/tools/ | grep -v ":0" | awk -F: '{sum+=$2} END{print sum}'`
+Verify: `python3 scripts/sync_metadata.py --check`
 
 Files that reference tool count:
 - [ ] `README.md` — header ("467 tools. 56 domains"), bridge section ("38 spectral/analyzer tools require bridge")

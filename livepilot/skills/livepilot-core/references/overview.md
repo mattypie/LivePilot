@@ -44,9 +44,16 @@ A flat tool list lets the AI press buttons. LivePilot's three layers give it con
 
 This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spectrum to confirm the mud is actually reduced."
 
-## The 467 Tools — What Each One Does
+## Core-Domain Reference (~228 tools, 13 of 56 domains)
 
-### Transport (12) — Playback, tempo, global state, diagnostics
+This section documents the 13 highest-traffic domains in prose (what each
+tool does, when to reach for it). It is intentionally NOT exhaustive — the
+remaining domains (sample_engine, atlas, agent_os, wonder_mode, and the rest
+of the Creative Intelligence layer) are covered by their own domain skills
+and by the auto-generated **[Tool Catalog](../../../../docs/manual/tool-catalog.md)**,
+which lists all 467 tools across all 56 domains.
+
+### Transport (showing 12 of 21) — Playback, tempo, global state, diagnostics
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -63,7 +70,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 | `get_recent_actions` | Returns log of recent commands sent to Ableton (newest first) | `limit` (1-50, default 20) |
 | `get_session_diagnostics` | Analyzes session for issues: armed tracks, solo leftovers, unnamed tracks, empty clips | — |
 
-### Tracks (14) — Create, delete, configure, group tracks
+### Tracks (showing 14 of 21) — Create, delete, configure, group tracks
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -82,7 +89,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 | `set_group_fold` | Folds/unfolds a group track | `track_index`, `folded` (bool) |
 | `set_track_input_monitoring` | Sets input monitoring state | `track_index`, `state` (0=In, 1=Auto, 2=Off) |
 
-### Clips (11) — Clip lifecycle, properties, warp
+### Clips (showing 11 of 16) — Clip lifecycle, properties, warp
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -122,7 +129,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 - `velocity_deviation` — -127.0 to 127.0
 - `release_velocity` — 0.0-127.0
 
-### Devices (15) — Instruments, effects, racks, 12.3+ device insertion
+### Devices (showing 15 of 42) — Instruments, effects, racks, 12.3+ device insertion
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -142,7 +149,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 | `set_chain_volume` | Sets volume of a rack chain | `track_index`, `device_index`, `chain_index`, `volume` |
 | `get_device_presets` | Lists presets for a device (audio effects, instruments, MIDI effects) | `device_name` |
 
-### Scenes (8) — Scene management
+### Scenes (showing 8 of 12) — Scene management
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -180,7 +187,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 | `search_browser` | Searches the browser | `query` |
 | `load_browser_item` | Loads a browser item onto a track — **`uri` MUST come from `search_browser` results, NEVER invented** | `track_index`, `uri` |
 
-### Arrangement (20) — Timeline, recording, cue points, arrangement notes
+### Arrangement (showing 20 of 21) — Timeline, recording, cue points, arrangement notes
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -205,7 +212,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 | `jump_to_cue` | Jumps to a cue point by index | `cue_index` |
 | `toggle_cue_point` | Creates/removes cue point at current position | — |
 
-### Memory (8) — Technique library persistence
+### Memory (showing 8 of 18) — Technique library persistence
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -218,7 +225,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 | `memory_update` | Updates name, tags, or qualities | `technique_id`, `name`, `tags`, `qualities` |
 | `memory_delete` | Removes technique (backs up first) | `technique_id` |
 
-### Analyzer (38) — Real-time DSP analysis (requires LivePilot Analyzer M4L device on master track)
+### Analyzer (showing 20 of 38) — Real-time DSP analysis (requires LivePilot Analyzer M4L device on master track)
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
@@ -243,7 +250,7 @@ This turns "set EQ band 3 to -4 dB" into "cut 400 Hz by 4 dB, then read the spec
 | `stop_scrub` | Stop preview | `track_index`, `clip_index` |
 | `get_display_values` | Human-readable parameter values ("440 Hz", "-6 dB") | `track_index`, `device_index` |
 
-### Automation (8) — Clip automation CRUD + intelligent curve generation
+### Automation (showing 8 of 9) — Clip automation CRUD + intelligent curve generation
 
 | Tool | What it does | Key params |
 |------|-------------|------------|

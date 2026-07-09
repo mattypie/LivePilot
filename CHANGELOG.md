@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed — dependencies
+- **2026-06-25** — Raised the Python floor to 3.12: numpy>=2.5.0 and scipy>=1.18.0 declare `Requires-Python >=3.12`, so the prior 3.11 floor blocked both dependency bumps across the CI matrix. CI now tests only Python 3.12; the install-time Python-version diagnostic and manifest/docs floor references were updated to match. `remote_script/` stays 3.11-syntax-compatible for Ableton's embedded Python (Live 12.3) — the CI matrix change does not relax that constraint.
+
 ## v1.27.2 — 2026-06-23
 
 Maintenance release: M4L bridge response-correlation + chunk-reassembly hardening, plan-routing fixes, a Python 3.11 floor with clearer install diagnostics, and a Remote Script Group-track crash guard. No change to the tool surface (467 tools / 56 domains). Re-frozen LivePilot_Analyzer.amxd (analyzer reports 1.27.2).

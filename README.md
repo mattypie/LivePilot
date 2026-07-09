@@ -38,14 +38,14 @@
 
 ---
 
-## What's New in v1.27.1
+## What's New in v1.27.2
 
-A maintenance release that fixes 35 issues from a deep audit and restores tools that had silently broken:
+A maintenance release with no change to the tool surface (467 tools / 56 domains):
 
-- **Restored tools** — `augment_with_samples`, `get_composition_plan`, `propose_composer_branches`, `check_clip_key_consistency`, and `compare_phrase_renders` were crashing or returning empty results; they now work.
-- **Recursive plugin scanning (#44)** — the User Corpus scanner now finds plugins nested in vendor subfolders (e.g. `VST3/<Vendor>/Plugin.vst3`) instead of only the top level.
-- **Truer analysis** — reference-gap, hook-salience, dynamics, drop-detection, harmony-slot, and grader fixes that previously produced fabricated or empty results.
-- **Safer & faster** — Splice credit-gating fixed, blocking sample I/O moved off the event loop, unbounded tool responses capped, and the M4L bridge no longer loses responses on UDP reordering.
+- **M4L bridge hardening** — responses are now correlated by request id across batched reads, so an interleaved or timed-out command can no longer resolve another command's future; chunk reassembly bounds-checks the chunk index and requires every index present before reassembling; the bridge socket is non-blocking so the miditool response path can't stall the event loop.
+- **Routing & Remote Script fixes** — `compressor_set_sidechain` now classifies correctly as an MCP tool; `get_master_rms` is dispatchable in plans; `get_track_info` no longer crashes on Group/Return tracks; `reload_handlers` reports per-module reload errors instead of swallowing them.
+- **Python 3.11 floor** — raised for numpy/scipy wheel availability, with a clearer pre-flight install message on failure.
+- **v1.27.1** fixed 35 issues from a deep audit and restored tools that had silently broken (`augment_with_samples`, `get_composition_plan`, `propose_composer_branches`, `check_clip_key_consistency`, `compare_phrase_renders`), plus recursive installed-plugin scanning.
 - **v1.27.0** added two read-only Live 12.4 capability-probe tools (`probe_link_audio`, `probe_stem_workflow`).
 
 Full details in the [CHANGELOG](CHANGELOG.md).

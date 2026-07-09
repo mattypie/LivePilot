@@ -111,6 +111,12 @@ Wonder Mode now serves two callers:
   references/move-family-diversity-rule.md)
 - 1 executable + 2 analytical is an honest, useful result
 - The `variant_count_actual` field tells you how many are real
+- **Check `degraded_reason`** on every `enter_wonder_mode` response — when
+  non-empty, fewer than 3 variants are actually executable (or none matched
+  and the set is cold-start fallback). Do not present a degraded set as
+  "three genuinely different options"; surface the degradation to the user
+  in the same terms the field describes. See `livepilot-core` SKILL.md →
+  "Response Fields You Must Check".
 
 ## Presenting Results
 

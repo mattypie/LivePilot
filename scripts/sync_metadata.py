@@ -321,6 +321,8 @@ TOOL_COUNT_FILES = [
     "docs/manual/intelligence.md",
     "docs/manual/tool-reference.md",
     "docs/manual/tool-catalog.md",
+    "docs/assets/banner-dark.svg",
+    "docs/assets/banner-light.svg",
 ]
 
 # Prose-level claim files — derived counts that must match source.
@@ -446,13 +448,14 @@ DOMAIN_COUNT_FILES = [
     "livepilot/skills/livepilot-release/SKILL.md",
     "docs/manual/index.md",
     "docs/manual/tool-catalog.md",
-    "docs/manual/tool-catalog-generated.md",
     # v1.21.3 audit-response #3: tool-reference.md was a blind-spot —
     # it said "52 domains" at line 3400 while the rest of the repo
     # advertised 53. Missing from this list was the reason
     # sync_metadata --check never caught it.
     "docs/manual/tool-reference.md",
     "tests/test_tools_contract.py",
+    "docs/assets/banner-dark.svg",
+    "docs/assets/banner-light.svg",
 ]
 
 # Files that enumerate the domain list inline as ``N domains: a, b, c, ...``.
@@ -590,6 +593,32 @@ def check_lockfile_version(version: str) -> list[str]:
         return [
             f"  package-lock.json: has version={lock_version!r}, "
             f"expected {version!r} (must match package.json)"
+        ]
+    return []
+
+
+def check_readme_whats_new(version: str) -> list[str]:
+    """README.md's "## What's New in vX.Y.Z" header must match the current version.
+
+    Added after the 2026-07-09 review: the CHANGELOG's top entry had moved to
+    v1.27.2 while README.md's "What's New" header still said v1.27.1 — a
+    stale-marketing-copy trap sync_metadata didn't previously catch because
+    README wasn't compared against a "What's New"-specific pattern (the
+    generic ``VERSION_FILES`` substring check passes as long as the version
+    string appears ANYWHERE in the file, e.g. in an old changelog bullet).
+    """
+    readme_path = ROOT / "README.md"
+    if not readme_path.exists():
+        return []
+    content = readme_path.read_text(encoding="utf-8")
+    match = re.search(r"##\s+What's New in v(\d+\.\d+\.\d+)", content)
+    if not match:
+        return ["  README.md: no \"## What's New in vX.Y.Z\" header found"]
+    readme_version = match.group(1)
+    if readme_version != version:
+        return [
+            f"  README.md: \"What's New\" header says v{readme_version}, "
+            f"expected v{version}"
         ]
     return []
 
@@ -851,6 +880,95 @@ def fix_tool_catalog() -> list[str]:
     return ["  docs/manual/tool-catalog.md: regenerated from live registry"]
 
 
+# Markers bounding the auto-generated "Domain Map" block in
+# docs/manual/index.md. Must match DOMAIN_MAP_START/DOMAIN_MAP_END in
+# scripts/generate_tool_catalog.py.
+_DOMAIN_MAP_START = "<!-- DOMAIN_MAP:AUTO-GENERATED START -->"
+_DOMAIN_MAP_END = "<!-- DOMAIN_MAP:AUTO-GENERATED END -->"
+
+
+def _run_domain_map_generator() -> tuple[str | None, str]:
+    """Run ``generate_tool_catalog.py --domain-map``.
+
+    Returns ``(stdout_or_None, error_message)``. On success, error_message is
+    empty; on failure, the first element is ``None`` and the second element
+    describes the failure (generator missing, timeout, non-zero exit).
+    """
+    import subprocess
+
+    generator = ROOT / "scripts" / "generate_tool_catalog.py"
+    if not generator.exists():
+        return None, "generator script missing"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(generator), "--domain-map"],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "generator timed out (120s)"
+    if result.returncode != 0:
+        stderr_tail = result.stderr.strip().splitlines()[-1] if result.stderr else "(no stderr)"
+        return None, stderr_tail[:200]
+    return result.stdout, ""
+
+
+def check_domain_map() -> list[str]:
+    """Verify docs/manual/index.md's Domain Map block matches the live registry.
+
+    Added after the 2026-07-09 review found the hand-maintained table 8/56
+    rows wrong with 3 domains (creative_director, audit, grader) missing
+    entirely, plus layer-header totals that didn't match their own rows.
+    Regenerates the block via ``generate_tool_catalog.py --domain-map`` and
+    diffs it against the content between the ``DOMAIN_MAP`` markers.
+    """
+    index_path = ROOT / "docs" / "manual" / "index.md"
+    if not index_path.exists():
+        return []
+    content = index_path.read_text(encoding="utf-8")
+    if _DOMAIN_MAP_START not in content or _DOMAIN_MAP_END not in content:
+        return ["  docs/manual/index.md: missing DOMAIN_MAP markers"]
+
+    new_block, error = _run_domain_map_generator()
+    if new_block is None:
+        return [f"  docs/manual/index.md: domain-map regen FAILED — {error}"]
+
+    start = content.index(_DOMAIN_MAP_START)
+    end = content.index(_DOMAIN_MAP_END) + len(_DOMAIN_MAP_END)
+    current_block = content[start:end]
+    if current_block.strip() != new_block.strip():
+        return [
+            "  docs/manual/index.md: Domain Map block is stale — "
+            "run `python3 scripts/sync_metadata.py --fix`"
+        ]
+    return []
+
+
+def fix_domain_map() -> list[str]:
+    """Regenerate the Domain Map block in docs/manual/index.md in place."""
+    index_path = ROOT / "docs" / "manual" / "index.md"
+    if not index_path.exists():
+        return []
+    content = index_path.read_text(encoding="utf-8")
+    if _DOMAIN_MAP_START not in content or _DOMAIN_MAP_END not in content:
+        return []
+
+    new_block, error = _run_domain_map_generator()
+    if new_block is None:
+        return [f"  docs/manual/index.md: domain-map regen FAILED — {error}"]
+
+    start = content.index(_DOMAIN_MAP_START)
+    end = content.index(_DOMAIN_MAP_END) + len(_DOMAIN_MAP_END)
+    old_block = content[start:end]
+    if old_block.strip() == new_block.strip():
+        return []
+    new_content = content[:start] + new_block.strip() + content[end:]
+    index_path.write_text(new_content, encoding="utf-8")
+    return ["  docs/manual/index.md: Domain Map regenerated from live registry"]
+
+
 def fix_domain_list(domains: list[str]) -> list[str]:
     """Append missing domain names to each DOMAIN_LIST_FILES inline enumeration.
 
@@ -931,6 +1049,11 @@ def main():
             # regen overwrites with the live-registry-derived header so
             # the two stay coherent.
             + fix_tool_catalog()
+            # Same ordering rationale applies to the Domain Map block in
+            # docs/manual/index.md: it's also in TOOL_COUNT_FILES /
+            # DOMAIN_COUNT_FILES for its top-line summary sentence, but the
+            # per-domain table rows are only ever correct via full regen.
+            + fix_domain_map()
         )
         if fixed:
             print(f"\nFixed {len(fixed)} reference(s):")
@@ -942,10 +1065,12 @@ def main():
         remaining = (
             check_version(version)
             + check_lockfile_version(version)
+            + check_readme_whats_new(version)
             + check_tool_count(tool_count)
             + check_domain_count(domain_count)
             + check_domain_list(domains)
             + check_all_prose_claims()
+            + check_domain_map()
         )
         if remaining:
             print(f"\n{len(remaining)} issue(s) remain (manual fix required):")
@@ -963,10 +1088,12 @@ def main():
     all_issues = (
         check_version(version)
         + check_lockfile_version(version)
+        + check_readme_whats_new(version)
         + check_tool_count(tool_count)
         + check_domain_count(domain_count)
         + check_domain_list(domains)
         + check_all_prose_claims()
+        + check_domain_map()
     )
     if all_issues:
         print(f"\nFound {len(all_issues)} stale reference(s):")

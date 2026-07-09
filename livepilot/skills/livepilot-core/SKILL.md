@@ -79,6 +79,38 @@ Report ALL errors to the user immediately. Common failure modes:
 - **M4L Analyzer not connected** — if `get_master_spectrum` errors with "Analyzer not detected", call `ensure_analyzer_on_master`. If it returns `install_required`, call `install_m4l_device(source_path="<repo>/m4l_device/LivePilot_Analyzer.amxd")` and retry. If it errors with "UDP bridge not connected", try `reconnect_bridge` first
 - **Another client connected** — Remote Script only accepts one TCP client on port 9878. If you see this error, the MCP server is already connected. Use MCP tools instead of raw TCP
 
+## Response Fields You Must Check
+
+These fields were added to existing tool responses. They aren't optional
+extras — each one changes what you're allowed to claim to the user.
+
+- **`degraded_reason`** (`enter_wonder_mode` / Wonder Mode) — non-empty when
+  fewer than 3 of the returned variants are actually executable, or when no
+  matching moves were found and variants are cold-start fallbacks. Contract:
+  if `degraded_reason` is set, do NOT present the set as "three genuinely
+  different options" — disclose the degradation honestly. See
+  `livepilot-wonder`.
+- **`unenforced_constraints`** (`apply_creative_constraint_set` / Creative
+  Constraints) — lists constraint names that are advisory-only; the engine
+  cannot mechanically verify them against compiled steps. Contract: for every
+  name in this list, YOU must self-police that constraint manually — the
+  tool returning `valid: true` does not mean an advisory constraint wasn't
+  violated.
+- **`measured` / `severity_basis`** (`get_masking_report` / Mix Engine) — a
+  masking entry's `severity` is either a real per-track spectral-overlap
+  measurement (`measured=True`, `severity_basis="spectral_overlap"`) or a
+  role-pair heuristic constant (`measured=False`,
+  `severity_basis="role_heuristic"`). Contract: treat `measured=False`
+  entries as low-confidence priors, not verified problems — solo the tracks
+  and read `get_master_spectrum` before taking a mixing action based on them
+  (§3 Analysis Before Action). See `livepilot-mix-engine`.
+- **`load_via` / `browse_hint`** (Atlas — `atlas_search`, `atlas_suggest`,
+  `atlas_device_info`, etc.) — set when an atlas entry's `uri` is cleared
+  because it's a known-broken M4L pack-instrument reference. Contract: when
+  `load_via == "preset"`, do NOT call `load_browser_item` with the atlas
+  `uri` (it's empty/invalid) — call `search_browser` with `browse_hint`
+  instead to resolve a real URI first.
+
 ## Technique Memory
 
 Three modes:
