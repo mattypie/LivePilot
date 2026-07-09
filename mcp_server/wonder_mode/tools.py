@@ -456,7 +456,10 @@ def rank_wonder_variants(
 
     return {
         "rankings": ranked,
-        "recommended": ranked[0]["variant_id"] if ranked else "",
+        # Prefer the highest-ranked EXECUTABLE variant (P2-30/LIVE#9) — the same
+        # rule as generate_wonder_variants; ranked[0] alone could hand back a
+        # non-executable/analytical-only shell.
+        "recommended": engine._pick_recommended(ranked),
     }
 
 

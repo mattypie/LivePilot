@@ -44,7 +44,7 @@ class TestSynthesisWiring:
             device_name="Wavetable",
             track_index=3,
             device_index=0,
-            parameter_state={"Osc 1 Position": 0.3, "Voices": 2, "Voices Detune": 0.05},
+            parameter_state={"Osc 1 Pos": 0.3, "Voices": 2, "Voices Detune": 0.05},
         )
 
     def test_synth_profile_produces_synthesis_seeds(self):

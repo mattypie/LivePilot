@@ -511,6 +511,7 @@ async def render_preview_variant(
         apply_steps = filter_apply_steps(steps)
 
         applied_count = 0
+        undo_count = 0
         playback_started = False
         preview_mode = "metadata_only_preview"
         spectral_before: Optional[dict] = None
@@ -534,6 +535,13 @@ async def render_preview_variant(
                 ctx=ctx,
             )
             applied_count = sum(1 for r in exec_results if r.ok)
+            # Only remote_command steps land on Ableton's linear undo stack.
+            # Bridge (M4L/OSC) and mcp_tool steps do NOT, so counting them and
+            # then issuing that many `undo`s walks back unrelated prior user
+            # edits. Mirror the experiment/engine.py:251 fix.
+            undo_count = sum(
+                1 for r in exec_results if r.ok and r.backend == "remote_command"
+            )
             if applied_count == 0 and apply_steps:
                 return {
                     "error": "Variant failed to apply any steps",
@@ -586,7 +594,7 @@ async def render_preview_variant(
                 except Exception as exc:
                     logger.debug("render_preview_variant failed: %s", exc)
 
-            for _ in range(applied_count):
+            for _ in range(undo_count):
                 try:
                     ableton.send_command("undo")
                 except Exception as exc:

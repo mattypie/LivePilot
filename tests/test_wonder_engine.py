@@ -11,6 +11,8 @@ from mcp_server.wonder_mode.engine import (
     rank_variants,
     select_distinct_variants,
 )
+from mcp_server.wonder_mode import engine as _wonder_engine
+from mcp_server.wonder_mode.engine import _pick_recommended
 from mcp_server.memory.taste_graph import TasteGraph
 
 
@@ -347,6 +349,103 @@ def test_full_pipeline_no_matches():
     for v in result["variants"]:
         assert v["compiled_plan"] is None
         assert v["analytical_only"] is True
+
+
+def test_partial_match_two_executables_sets_degraded_reason(monkeypatch):
+    """P2-30: a 2-executable partial match must report a non-empty degraded_reason.
+
+    Two real move-based variants padded with one analytical fallback is a
+    DEGRADED set, not a full match. Pre-fix only executable_count==1 set a
+    reason, so the 2-executable case silently presented as fully matched.
+    """
+    from mcp_server.wonder_mode import engine
+
+    real_moves = discover_moves("make it punchier")
+    assert len(real_moves) >= 2
+    two_distinct = real_moves[:2]
+    # Force exactly two distinct (executable) moves through the pipeline.
+    monkeypatch.setattr(engine, "select_distinct_variants", lambda moves: two_distinct)
+
+    result = generate_wonder_variants("make it punchier")
+    assert result["variant_count_actual"] == 2
+    assert len(result["variants"]) == 3  # padded to 3 with analytical fallback
+    assert result["degraded_reason"] != ""
+    assert "2 of 3" in result["degraded_reason"]
+
+
+def test_degraded_reason_tracks_real_executability(monkeypatch):
+    """LIVE#9/WP230: degraded_reason must reflect ACTUAL executability, not the
+    move-match count. 'make it punchier' compiles 2 executable + 1
+    non-executable variant, so it is NOT a full match — the set must be flagged
+    degraded and the recommended variant must be executable. (Previously this
+    test asserted degraded_reason=='' — it encoded the bug.)"""
+    result = generate_wonder_variants("make it punchier")
+    real_exec = sum(1 for v in result["variants"] if not v.get("analytical_only"))
+    if real_exec < 3:
+        assert result["degraded_reason"] != ""
+        assert f"{real_exec} of 3" in result["degraded_reason"]
+        # recommended must point at an executable variant when one exists.
+        rec_id = result["recommended"]
+        rec = next(v for v in result["variants"] if v["variant_id"] == rec_id)
+        assert rec.get("analytical_only") is False
+    else:
+        assert result["degraded_reason"] == ""
+
+
+def test_all_executable_leaves_degraded_reason_empty(monkeypatch):
+    """When every move-based variant compiles to a runnable plan, the set is a
+    genuine full match → no degraded_reason."""
+    monkeypatch.setattr(
+        _wonder_engine, "_compile_variant_plan",
+        lambda move_dict, kernel: {"executable": True, "step_count": 3},
+    )
+    result = generate_wonder_variants("make it punchier")
+    real_exec = sum(1 for v in result["variants"] if not v.get("analytical_only"))
+    assert real_exec == 3
+    assert result["degraded_reason"] == ""
+
+
+def test_non_executable_compiled_plan_sets_analytical_only(monkeypatch):
+    """LIVE#9: a compiled plan that exists but is non-executable (0 steps /
+    requires seed_args) must mark the variant analytical_only=True — not False."""
+    monkeypatch.setattr(
+        _wonder_engine, "_compile_variant_plan",
+        lambda move_dict, kernel: {"executable": False, "step_count": 0},
+    )
+    move = {"move_id": "probe", "family": "mix", "intent": "x",
+            "targets": {"punch": 0.3}, "risk_level": "low"}
+    v = build_variant("Probe", move, song_brain={}, variant_id="v_probe", kernel={"k": 1})
+    assert v["analytical_only"] is True
+
+
+def test_executable_compiled_plan_keeps_analytical_only_false(monkeypatch):
+    monkeypatch.setattr(
+        _wonder_engine, "_compile_variant_plan",
+        lambda move_dict, kernel: {"executable": True, "step_count": 3},
+    )
+    move = {"move_id": "probe", "family": "mix", "intent": "x",
+            "targets": {"punch": 0.3}, "risk_level": "low"}
+    v = build_variant("Probe", move, song_brain={}, variant_id="v_probe", kernel={"k": 1})
+    assert v["analytical_only"] is False
+
+
+def test_pick_recommended_prefers_executable():
+    """P2-30: recommended must skip analytical-only shells when an executable
+    variant exists, even if the shell ranks first."""
+    ranked = [
+        {"variant_id": "shell", "analytical_only": True},
+        {"variant_id": "real", "analytical_only": False},
+    ]
+    assert _pick_recommended(ranked) == "real"
+
+
+def test_pick_recommended_falls_back_to_top_when_all_analytical():
+    ranked = [
+        {"variant_id": "a", "analytical_only": True},
+        {"variant_id": "b", "analytical_only": True},
+    ]
+    assert _pick_recommended(ranked) == "a"
+    assert _pick_recommended([]) == ""
 
 
 def test_rank_preserves_all_fields():

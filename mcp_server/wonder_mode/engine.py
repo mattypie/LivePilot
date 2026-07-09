@@ -271,9 +271,12 @@ def build_variant(
     if sacred and identity_effect == "preserves":
         why += f". Preserves {sacred[0].get('description', 'sacred elements')}"
 
-    # Compile through semantic compiler if kernel available
+    # Compile through semantic compiler if kernel available. A variant is
+    # analytical-only when it has no compiled plan OR the compiled plan is
+    # non-executable (0 steps / requires seed_args) — LIVE#9: previously a
+    # non-executable compiled plan was mislabeled analytical_only=False.
     compiled = _compile_variant_plan(move_dict, kernel)
-    analytical = compiled is None
+    analytical = compiled is None or not compiled.get("executable", False)
 
     return {
         "variant_id": variant_id,
@@ -597,6 +600,22 @@ def _get_corpus_hints(request_text: str, diagnosis: dict | None) -> dict | None:
 # ── Pipeline orchestrator ────────────────────────────────────────
 
 
+def _pick_recommended(ranked: list[dict]) -> str:
+    """Pick the recommended variant_id from a ranked list.
+
+    Prefer the highest-ranked EXECUTABLE variant (analytical_only is False) so
+    callers that auto-apply `recommended` never get handed a non-executable /
+    analytical-only shell when a real move exists (P2-30 / LIVE#9). Falls back
+    to the top-ranked variant when none are executable.
+    """
+    if not ranked:
+        return ""
+    for v in ranked:
+        if not v.get("analytical_only", False):
+            return v["variant_id"]
+    return ranked[0]["variant_id"]
+
+
 def generate_wonder_variants(
     request_text: str,
     diagnosis: dict | None = None,
@@ -651,7 +670,10 @@ def generate_wonder_variants(
             v["corpus_hints"] = corpus_hints
         variants.append(v)
 
-    executable_count = len(variants)
+    # move_based_count = how many real moves matched (pre-padding). Drives the
+    # padding gate AND variant_count_actual (move-match semantics callers/tests
+    # depend on). Executability is a SEPARATE axis computed after ranking.
+    move_based_count = len(variants)
 
     # v1.18.2 #10 fix: when NO executable moves matched, seed from the
     # cold-start distinct-starting-points set instead of padding with
@@ -663,7 +685,7 @@ def generate_wonder_variants(
     # the generic analytical fallback because we don't want to mix real
     # move-based variants with architecture-first seeds — that would
     # confuse the presentation.
-    if executable_count == 0:
+    if move_based_count == 0:
         while len(variants) < 3:
             idx = len(variants)
             seed = _COLD_START_SEEDS[idx]
@@ -698,8 +720,13 @@ def generate_wonder_variants(
         taste_evidence=taste_evidence,
     )
 
+    # LIVE#9 / P2-30: degraded_reason must reflect ACTUAL executability, not the
+    # move-match count. A move-based variant whose compiled plan is
+    # non-executable (0 steps / requires seed_args) is analytical_only=True and
+    # must NOT be presented as a full match.
+    real_executable = sum(1 for v in ranked if not v.get("analytical_only", False))
     degraded_reason = ""
-    if executable_count == 0:
+    if move_based_count == 0:
         # v1.18.2 #10: cold-start path — distinct starting-point seeds
         # rather than identical-generic padding.
         degraded_reason = (
@@ -707,18 +734,26 @@ def generate_wonder_variants(
             "from distinct starting-point families (device_creation × 2 "
             "+ mix-architecture-first)"
         )
-    elif executable_count == 1:
-        degraded_reason = "Only 1 distinct executable move found"
+    elif real_executable < 3:
+        # Partial/degraded: fewer than 3 variants are actually executable; the
+        # remainder are analytical/non-executable fallbacks. Surface it so a
+        # degraded set is not presented as a full match.
+        fallback_count = 3 - real_executable
+        degraded_reason = (
+            f"Only {real_executable} of 3 variants are executable; the "
+            f"remaining {fallback_count} are analytical/non-executable fallbacks"
+        )
 
     return {
         "mode": "wonder",
         "request": request_text,
         "variants": ranked,
-        "recommended": ranked[0]["variant_id"] if ranked else "",
+        "recommended": _pick_recommended(ranked),
         "taste_evidence": taste_evidence,
         "identity_confidence": song_brain.get("identity_confidence", 0.0),
         "move_count_matched": len(moves),
-        "variant_count_actual": executable_count,
+        "variant_count_actual": move_based_count,
+        "executable_count": real_executable,
         "degraded_reason": degraded_reason,
     }
 
