@@ -38,13 +38,16 @@
 
 ---
 
-## What's New in v1.27.2
+## What's New in v1.27.3
 
-A maintenance release with no change to the tool surface (467 tools / 56 domains):
+A deep-review remediation release — ~150 fixes across two audit campaigns, no change to the tool surface (467 tools / 56 domains):
 
-- **M4L bridge hardening** — responses are now correlated by request id across batched reads, so an interleaved or timed-out command can no longer resolve another command's future; chunk reassembly bounds-checks the chunk index and requires every index present before reassembling; the bridge socket is non-blocking so the miditool response path can't stall the event loop.
-- **Routing & Remote Script fixes** — `compressor_set_sidechain` now classifies correctly as an MCP tool; `get_master_rms` is dispatchable in plans; `get_track_info` no longer crashes on Group/Return tracks; `reload_handlers` reports per-module reload errors instead of swallowing them.
-- **Python 3.11 floor** — raised for numpy/scipy wheel availability, with a clearer pre-flight install message on failure.
+- **Event-loop blocking eliminated tree-wide** — every remaining blocking call in async tool paths (composer apply executors, the shared plan-step executor, preview/experiment paths, ~80 sites in 13 files) now offloads to a worker thread; a repo-wide AST regression guard keeps it that way. Long composes no longer freeze concurrent tools or the analyzer bridge.
+- **Atlas scans no longer truncate** — library scans previously capped each category at 1,000 entries alphabetically (most drum one-shots were unreachable); the cap is now 25,000 with per-category truncation flags and rescan warnings. Run `scan_full_library(force=True)` once to rebuild your atlas.
+- **Splice self-heals** — a Splice desktop restart no longer silently turns every search into fake "0 results"; the client marks itself degraded and reconnects on the next call.
+- **Safer state** — cached preview/wonder plans carry a session fingerprint and refuse to replay against a session that changed shape; persisted taste/project stores back up before any reset.
+- **Stronger release gates** — the MCPB bundle, .amxd freeze content, and Python 3.11 Remote Script compatibility are now all CI-enforced.
+- **Python 3.12 floor** for the MCP server (numpy ≥2.5 / scipy ≥1.18); the Remote Script stays 3.11-compatible for Ableton's embedded Python.
 - **v1.27.1** fixed 35 issues from a deep audit and restored tools that had silently broken (`augment_with_samples`, `get_composition_plan`, `propose_composer_branches`, `check_clip_key_consistency`, `compare_phrase_renders`), plus recursive installed-plugin scanning.
 - **v1.27.0** added two read-only Live 12.4 capability-probe tools (`probe_link_audio`, `probe_stem_workflow`).
 

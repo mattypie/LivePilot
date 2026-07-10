@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.27.3 — 2026-07-10
 
 Deep-review remediation campaign (2026-07-09, on top of the 2026-06-24 fix batch): event-loop
 blocking eliminated tree-wide, release-pipeline gates hardened, atlas scan truncation fixed,
@@ -16,7 +16,14 @@ Splice connection health, state-layer race/replay guards, docs drift automation,
 - The AST regression guard now scans ALL of `mcp_server/` (was analyzer.py-only) with
   one-hop transitive detection and file-I/O/subprocess patterns (`scripts/scan_async_blocking.py`).
 
+Live-verified on Ableton 12.4.2 (2026-07-10): per-track volume reporting, force_arrangement
+with return tracks, sidechain name resolution (both casings), analyzer bridge reconnect, and a
+full 40k-device library rescan with zero category truncation.
+
 ### Fixed — correctness
+- Sidechain source matching gained a case-insensitive EXACT tier (found live: Live 12.4
+  routing menus can list bare unprefixed track names, where the "-name" suffix fallback
+  never fires); matching ladder extracted into a tested helper.
 - `audit_layer` §5.1 timbre check was a silent double no-op (wrong call signature + uppercase
   band table vs lowercase producers) — now plumbs cached analyzer spectrum and case-folds.
 - Atlas scans no longer truncate alphabetically at 1000 entries/category (drum kits previously
