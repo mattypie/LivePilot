@@ -426,6 +426,36 @@ def _collect_routing_diagnostic(device):
     return " | ".join(parts) if parts else "<none>"
 
 
+def _match_routing_type(available, source_type):
+    """Resolve a caller-supplied sidechain source against Live's routing menu.
+
+    Matching ladder (first hit wins):
+      1. Exact display-name match — preserves the "1-KICK" contract.
+      2. Case-insensitive exact match — Live 12.4 routing menus can show the
+         BARE track name with no index prefix ("Kick"), so a lowercase caller
+         ("kick") must still resolve. Found live 2026-07-10: the suffix
+         fallback below never fires for unprefixed display names.
+      3. Case-insensitive "-<name>" suffix match — callers (e.g. the
+         semantic-move compilers) may pass a bare track name while the menu
+         is index-prefixed ("1-Kick"); casefold both sides so "1-KICK" /
+         "1-Kick" / "1-kick" all resolve regardless of menu case convention.
+
+    Returns the matched routing object, or None.
+    """
+    for rt in available:
+        if rt.display_name == source_type:
+            return rt
+    want_cf = str(source_type).casefold()
+    for rt in available:
+        if rt.display_name.casefold() == want_cf:
+            return rt
+    suffix = "-" + want_cf
+    for rt in available:
+        if rt.display_name.casefold().endswith(suffix):
+            return rt
+    return None
+
+
 @register("set_compressor_sidechain")
 def set_compressor_sidechain(song, params):
     """Configure a Compressor's sidechain input routing (BUG-A3).
@@ -497,26 +527,7 @@ def set_compressor_sidechain(song, params):
 
     if want_type:
         available = surface["types"]
-        matched = None
-        # Exact display-name match first — preserves the "1-KICK" contract.
-        for rt in available:
-            if rt.display_name == source_type:
-                matched = rt
-                break
-        # Tolerant fallback: callers (e.g. the semantic-move compilers) may
-        # pass a BARE track name ("Kick") while Live's routing menu is
-        # index-prefixed ("1-Kick"). Resolve when a display name ends with
-        # "-<name>" so a bare name still matches without the caller guessing
-        # Live's 1-based numbering.
-        if matched is None:
-            # casefold both sides so a caller's "Kick" matches Live's
-            # "1-KICK" / "1-Kick" / "1-kick" regardless of the routing
-            # menu's own case convention (varies by device/build).
-            suffix = ("-" + str(source_type)).casefold()
-            for rt in available:
-                if rt.display_name.casefold().endswith(suffix):
-                    matched = rt
-                    break
+        matched = _match_routing_type(available, source_type)
         if matched is None:
             options = [rt.display_name for rt in available]
             raise ValueError(
