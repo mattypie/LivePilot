@@ -38,6 +38,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Install dependencies
+        # The domain-map check regenerates docs/manual/index.md's table from
+        # the LIVE tool registry (mcp.list_tools()), which imports
+        # mcp_server.server — fastmcp and friends must be importable here.
+        run: |
+          pip install numpy setuptools wheel
+          pip install -r requirements.txt
       - name: sync_metadata --check
         run: python scripts/sync_metadata.py --check
 

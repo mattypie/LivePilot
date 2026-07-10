@@ -17,6 +17,7 @@ installer source.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 import shutil
 import subprocess
@@ -34,12 +35,21 @@ def _repo_root() -> Path:
 
 
 def _fake_home(tmp_path: Path) -> tuple[Path, Path]:
-    """Create a fake HOME with the default macOS/Windows-style candidate dir.
+    """Create a fake HOME with THIS platform's candidate dir shape.
 
-    Returns (home_dir, remote_scripts_dir).
+    installer/paths.js probes platform-specific locations: macOS looks under
+    ~/Music/Ableton/User Library/Remote Scripts, Windows under
+    ~/Documents/Ableton/User Library/Remote Scripts, and Linux has no
+    candidates at all (Ableton doesn't ship for Linux) — callers must skip
+    there. Returns (home_dir, remote_scripts_dir).
     """
+    if sys.platform.startswith("linux"):
+        pytest.skip("installer has no Ableton candidate paths on Linux")
     home = tmp_path / "home"
-    remote_scripts = home / "Music" / "Ableton" / "User Library" / "Remote Scripts"
+    if sys.platform == "win32":
+        remote_scripts = home / "Documents" / "Ableton" / "User Library" / "Remote Scripts"
+    else:
+        remote_scripts = home / "Music" / "Ableton" / "User Library" / "Remote Scripts"
     remote_scripts.mkdir(parents=True)
     return home, remote_scripts
 
@@ -47,6 +57,9 @@ def _fake_home(tmp_path: Path) -> tuple[Path, Path]:
 def _env_for_home(home: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    # Node's os.homedir() reads USERPROFILE on Windows, HOME on POSIX —
+    # set both so the sandbox redirect works on every runner.
+    env["USERPROFILE"] = str(home)
     # Make sure a stray real install path never leaks into the sandbox.
     env.pop("LIVEPILOT_INSTALL_PATH", None)
     return env
