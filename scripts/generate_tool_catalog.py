@@ -254,6 +254,13 @@ def generate_domain_map(tools: list[dict] | None = None) -> str:
 
 
 def main():
+    # The emitted markdown contains non-latin-1 glyphs ("→"); Windows
+    # consoles/pipes default to cp1252 and crash with UnicodeEncodeError.
+    # Belt-and-braces with the PYTHONIOENCODING env the sync_metadata
+    # subprocess callers set (standing cp1252 rule for glyph-printing scripts).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     if len(sys.argv) > 1 and sys.argv[1] == "--domain-map":
         sys.stdout.write(generate_domain_map())
         return

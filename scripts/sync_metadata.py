@@ -847,6 +847,7 @@ def fix_tool_catalog() -> list[str]:
     the header count from the live ``mcp.list_tools()`` call rather than
     from the contract-test assertion.
     """
+    import os
     import subprocess
 
     catalog_path = ROOT / "docs" / "manual" / "tool-catalog.md"
@@ -858,6 +859,10 @@ def fix_tool_catalog() -> list[str]:
             [sys.executable, str(generator)],
             capture_output=True,
             text=True,
+            # utf-8 on both sides — see _run_domain_map_generator (the child
+            # prints non-latin-1 glyphs; Windows pipes default to cp1252).
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             cwd=str(ROOT),
             timeout=120,
         )
@@ -894,6 +899,7 @@ def _run_domain_map_generator() -> tuple[str | None, str]:
     empty; on failure, the first element is ``None`` and the second element
     describes the failure (generator missing, timeout, non-zero exit).
     """
+    import os
     import subprocess
 
     generator = ROOT / "scripts" / "generate_tool_catalog.py"
@@ -904,6 +910,12 @@ def _run_domain_map_generator() -> tuple[str | None, str]:
             [sys.executable, str(generator), "--domain-map"],
             capture_output=True,
             text=True,
+            # Windows pipes default to cp1252; the generated table contains
+            # non-latin-1 glyphs ("→"). Force utf-8 on both the child's
+            # stdout (PYTHONIOENCODING) and the parent's decode (encoding=)
+            # or the child crashes with UnicodeEncodeError on windows-latest.
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             cwd=str(ROOT),
             timeout=120,
         )
